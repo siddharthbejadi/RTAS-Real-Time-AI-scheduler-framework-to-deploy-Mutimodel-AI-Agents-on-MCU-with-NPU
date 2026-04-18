@@ -1,0 +1,36 @@
+# STM32CubeIDE / Eclipse
+**/.metadata/
+**/.recommenders/
+**/.settings/*.prefs
+
+# Build outputs
+**/Debug/
+**/Release/
+**/build/
+**/out/
+
+# Toolchain artifacts
+*.o
+*.a
+*.d
+*.su
+*.cyclo
+*.lst
+*.map
+*.elf
+*.axf
+*.hex
+*.bin
+
+# Generated dependency/metadata
+*.depend
+*.stackdump
+
+# Backups
+*.bak
+*.swp
+*.tmp
+
+# OS
+Thumbs.db
+Desktop.ini
