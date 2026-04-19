@@ -83,6 +83,12 @@ CLASSES_TABLE;
 #define LCD_FG_HEIGHT  SCREEN_HEIGHT
 #define LCD_FG_FRAMEBUFFER_SIZE  (LCD_FG_WIDTH * LCD_FG_HEIGHT * 2U)
 
+#define LCD_PREVIEW_WIDTH   256U
+#define LCD_PREVIEW_HEIGHT  212U
+#define LCD_PREVIEW_X0      (SCREEN_WIDTH - LCD_PREVIEW_WIDTH)
+#define LCD_PREVIEW_Y0      0U
+#define LCD_PREVIEW_FRAMEBUFFER_SIZE  (LCD_PREVIEW_WIDTH * LCD_PREVIEW_HEIGHT * 2U)
+
 typedef struct
 {
   uint32_t X0;
@@ -222,11 +228,22 @@ static uint8_t lcd_bg_buffer[800U * 480U * 2U];
 
 __attribute__((section(".psram_bss")))
 __attribute__((aligned(32)))
+static uint8_t lcd_preview_buffer[2][LCD_PREVIEW_FRAMEBUFFER_SIZE];
+
+__attribute__((section(".psram_bss")))
+__attribute__((aligned(32)))
 static uint8_t lcd_fg_buffer[2][LCD_FG_WIDTH * LCD_FG_HEIGHT * 2U];
 
 static int lcd_fg_buffer_rd_idx = 0;
+static int lcd_preview_buffer_rd_idx = 0;
 
+typedef enum
+{
+  DISPLAY_LAYOUT_FULLSCREEN = 0,
+  DISPLAY_LAYOUT_MAIN_PREVIEW = 1
+} DisplayLayout_t;
 
+static DisplayLayout_t display_layout = DISPLAY_LAYOUT_FULLSCREEN;
 
 /* -------------------------------------------------------------------------- */
 /* Forward declarations                                                       */
@@ -237,6 +254,8 @@ static void CONSOLE_Config(void);
 static void NPURam_enable(void);
 static void NPUCache_config(void);
 static void Display_NetworkOutput(od_pp_out_t *p_postprocess, uint32_t inference_ms);
+static void Display_SetLayout(DisplayLayout_t layout);
+static void Display_UpdateMainPreview(void);
 static void LCD_init(void);
 static void Security_Config(void);
 static void set_clk_sleep_mode(void);
@@ -785,6 +804,16 @@ static void Display_NetworkOutput(od_pp_out_t *p_postprocess, uint32_t inference
   {
     if (app_state == APP_STATE_MAIN)
     {
+      Display_SetLayout(DISPLAY_LAYOUT_MAIN_PREVIEW);
+    }
+    else if ((app_state == APP_STATE_AUTH) || (app_state == APP_STATE_AUTH_SUCCESS) ||
+             (app_state == APP_STATE_SPLASH))
+    {
+      Display_SetLayout(DISPLAY_LAYOUT_FULLSCREEN);
+    }
+
+    if (app_state == APP_STATE_MAIN)
+    {
       Buzzer_Play(BEEP_AUTH_OK);
     }
     else if (app_state == APP_STATE_BACKING_OFF)
@@ -810,6 +839,11 @@ static void Display_NetworkOutput(od_pp_out_t *p_postprocess, uint32_t inference
    * If your UI_Render signature differs, adapt here.
    */
   (void)inference_ms;
+  if (app_state == APP_STATE_MAIN)
+  {
+    Display_UpdateMainPreview();
+  }
+
   UI_Render(p_postprocess, (UI_BgArea_t *)&lcd_bg_area);
 
   SCB_CleanDCache_by_Addr((void *)lcd_fg_buffer[lcd_fg_buffer_rd_idx],
@@ -821,6 +855,107 @@ static void Display_NetworkOutput(od_pp_out_t *p_postprocess, uint32_t inference
   assert(ret == HAL_OK);
 
   lcd_fg_buffer_rd_idx = 1 - lcd_fg_buffer_rd_idx;
+}
+
+static void Display_SetLayout(DisplayLayout_t layout)
+{
+  int ret;
+  BSP_LCD_LayerConfig_t layer_config = {0};
+
+  if (display_layout == layout)
+  {
+    return;
+  }
+
+  if (layout == DISPLAY_LAYOUT_MAIN_PREVIEW)
+  {
+    lcd_bg_area.X0 = LCD_PREVIEW_X0;
+    lcd_bg_area.Y0 = LCD_PREVIEW_Y0;
+    lcd_bg_area.XSize = LCD_PREVIEW_WIDTH;
+    lcd_bg_area.YSize = LCD_PREVIEW_HEIGHT;
+    lcd_preview_buffer_rd_idx = 0;
+    ret = HAL_LTDC_SetAddress_NoReload(&hlcd_ltdc,
+                                       (uint32_t)lcd_preview_buffer[lcd_preview_buffer_rd_idx],
+                                       LTDC_LAYER_1);
+    assert(ret == HAL_OK);
+  }
+  else
+  {
+    lcd_bg_area.X0 = 0U;
+    lcd_bg_area.Y0 = 0U;
+    lcd_bg_area.XSize = SCREEN_WIDTH;
+    lcd_bg_area.YSize = SCREEN_HEIGHT;
+
+    SCB_InvalidateDCache_by_Addr((void *)lcd_bg_buffer, sizeof(lcd_bg_buffer));
+
+    layer_config.X0          = lcd_bg_area.X0;
+    layer_config.Y0          = lcd_bg_area.Y0;
+    layer_config.X1          = lcd_bg_area.X0 + lcd_bg_area.XSize;
+    layer_config.Y1          = lcd_bg_area.Y0 + lcd_bg_area.YSize;
+    layer_config.PixelFormat = LCD_PIXEL_FORMAT_RGB565;
+    layer_config.Address     = (uint32_t)lcd_bg_buffer;
+    ret = BSP_LCD_ConfigLayer(0, LTDC_LAYER_1, &layer_config);
+    assert(ret == BSP_ERROR_NONE);
+
+    display_layout = layout;
+    return;
+  }
+
+  ret = HAL_LTDC_SetWindowSize_NoReload(&hlcd_ltdc,
+                                        lcd_bg_area.XSize,
+                                        lcd_bg_area.YSize,
+                                        LTDC_LAYER_1);
+  assert(ret == HAL_OK);
+
+  ret = HAL_LTDC_SetWindowPosition_NoReload(&hlcd_ltdc,
+                                            lcd_bg_area.X0,
+                                            lcd_bg_area.Y0,
+                                            LTDC_LAYER_1);
+  assert(ret == HAL_OK);
+
+  ret = HAL_LTDC_ReloadLayer(&hlcd_ltdc,
+                             LTDC_RELOAD_VERTICAL_BLANKING,
+                             LTDC_LAYER_1);
+  assert(ret == HAL_OK);
+
+  display_layout = layout;
+}
+
+static void Display_UpdateMainPreview(void)
+{
+  int ret;
+  const uint32_t dst_w = LCD_PREVIEW_WIDTH;
+  const uint32_t dst_h = LCD_PREVIEW_HEIGHT;
+  const uint16_t *src = (const uint16_t *)lcd_bg_buffer;
+  int wr_idx = 1 - lcd_preview_buffer_rd_idx;
+  uint16_t *dst = (uint16_t *)lcd_preview_buffer[wr_idx];
+
+  SCB_InvalidateDCache_by_Addr((void *)lcd_bg_buffer, sizeof(lcd_bg_buffer));
+
+  for (uint32_t y = 0U; y < dst_h; y++)
+  {
+    uint32_t src_y = (y * SCREEN_HEIGHT) / dst_h;
+    for (uint32_t x = 0U; x < dst_w; x++)
+    {
+      uint32_t src_x = (x * SCREEN_WIDTH) / dst_w;
+      dst[(y * dst_w) + x] = src[(src_y * SCREEN_WIDTH) + src_x];
+    }
+  }
+
+  SCB_CleanDCache_by_Addr((void *)lcd_preview_buffer[wr_idx],
+                          sizeof(lcd_preview_buffer[wr_idx]));
+
+  ret = HAL_LTDC_SetAddress_NoReload(&hlcd_ltdc,
+                                     (uint32_t)lcd_preview_buffer[wr_idx],
+                                     LTDC_LAYER_1);
+  assert(ret == HAL_OK);
+
+  ret = HAL_LTDC_ReloadLayer(&hlcd_ltdc,
+                             LTDC_RELOAD_VERTICAL_BLANKING,
+                             LTDC_LAYER_1);
+  assert(ret == HAL_OK);
+
+  lcd_preview_buffer_rd_idx = wr_idx;
 }
 
 static void LCD_init(void)

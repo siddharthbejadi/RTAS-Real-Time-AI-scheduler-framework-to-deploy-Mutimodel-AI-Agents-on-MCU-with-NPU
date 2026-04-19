@@ -274,16 +274,19 @@ static void DrawAuth(od_pp_out_t *pp)
 static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
 {
     const uint32_t screen_bg = 0x00000000U;
+    const uint32_t panel_bg = 0xDD0A0A12U;
     uint32_t nb = pp->nb_detect;
     od_pp_outBuffer_t *r = pp->pOutBuff;
 
     UTIL_LCD_FillRect(0U, 0U, UI_SCREEN_W, UI_SCREEN_H, screen_bg);
 
     /* Camera PiP window — tuned for 800x480 landscape */
-    uint32_t cam_x = 0U;
+    Panel(0U, 0U, 490U, 430U, panel_bg, 0xFF00FFFFU);
+
+    uint32_t cam_x = 544U;
     uint32_t cam_y = 0U;
-    uint32_t cam_w = UI_SCREEN_W;
-    uint32_t cam_h = UI_SCREEN_H;
+    uint32_t cam_w = 256U;
+    uint32_t cam_h = 212U;
 
     /* If caller provides a valid bg area, prefer that */
     if (bg != NULL)
@@ -293,6 +296,8 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
         cam_w = bg->XSize;
         cam_h = bg->YSize;
     }
+
+    UTIL_LCD_DrawRect(cam_x - 2U, cam_y - 2U, cam_w + 4U, cam_h + 4U, 0xFF00FFFFU);
 
     if ((r != NULL) && (nb > 0U))
     {
@@ -326,8 +331,14 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
 
     char namebuf[48];
     snprintf(namebuf, sizeof(namebuf), "Welcome: %s", who);
-    DrawText(560U, 20U, (uint8_t*)namebuf,
-             LEFT_MODE, &Font16, name_col, screen_bg);
+    DrawText(30U, 40U, (uint8_t*)"MAIN ACCESS PANEL",
+             LEFT_MODE, &Font20, 0xFF00FFFFU, panel_bg);
+
+    DrawText(30U, 82U, (uint8_t*)"Access granted.",
+             LEFT_MODE, &Font20, 0xFF00FF88U, panel_bg);
+
+    DrawText(30U, 122U, (uint8_t*)namebuf,
+             LEFT_MODE, &Font20, name_col, panel_bg);
 
     if ((r != NULL) && (nb > 0U))
     {
@@ -339,8 +350,8 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
         snprintf(line2, sizeof(line2), "Camera active / session unlocked");
     }
 
-    DrawText(560U, 44U, (uint8_t*)line2,
-             LEFT_MODE, &Font16, 0xFFFFFFFFU, screen_bg);
+    DrawText(30U, 162U, (uint8_t*)line2,
+             LEFT_MODE, &Font16, 0xFFFFFFFFU, panel_bg);
 
 
     /* Bottom toolbar — corrected for 800x480 landscape */
