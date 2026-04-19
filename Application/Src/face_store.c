@@ -96,6 +96,7 @@ bool FaceStore_Add(const char *name,
     strncpy(rec->name, name, FACE_STORE_NAME_LEN - 1);
     rec->active = 1;
     memcpy(rec->embedding, embedding, FACE_STORE_EMB_DIM * sizeof(float));
+    rec->is_admin = (slot == 0U) ? 1U : 0U;
     if (thumb_rgb565_48x48) {
         memcpy(rec->thumb, thumb_rgb565_48x48, sizeof(rec->thumb));
     }
@@ -116,6 +117,38 @@ bool FaceStore_Remove(uint32_t index)
     }
     s_blob.count = new_count;
     return true;
+}
+
+bool FaceStore_Rename(uint32_t index, const char *name)
+{
+    if ((index >= FACE_STORE_MAX_RECORDS) || !s_blob.records[index].active || (name == NULL)) {
+        return false;
+    }
+
+    memset(s_blob.records[index].name, 0, sizeof(s_blob.records[index].name));
+    strncpy(s_blob.records[index].name, name, FACE_STORE_NAME_LEN - 1);
+    return FaceStore_Commit();
+}
+
+bool FaceStore_SetAdmin(uint32_t index, bool is_admin)
+{
+    if ((index >= FACE_STORE_MAX_RECORDS) || !s_blob.records[index].active) {
+        return false;
+    }
+
+    s_blob.records[index].is_admin = ((index == 0U) || is_admin) ? 1U : 0U;
+    return FaceStore_Commit();
+}
+
+bool FaceStore_IsAdmin(uint32_t index)
+{
+    if (index == 0U) {
+        return true;
+    }
+    if ((index >= FACE_STORE_MAX_RECORDS) || !s_blob.records[index].active) {
+        return false;
+    }
+    return s_blob.records[index].is_admin != 0U;
 }
 
 bool FaceStore_ClearAll(void)

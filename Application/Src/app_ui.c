@@ -1,4 +1,5 @@
 #include "app_ui.h"
+#include "app_touch.h"
 #include "stm32_lcd.h"
 #include "stm32n6570_discovery.h"
 #include "stm32n6xx_hal.h"
@@ -23,11 +24,16 @@ extern const char *classes_table[];
 extern int32_t last_recog_idx;
 extern float   last_recog_score;
 extern float   last_det_conf;
+extern uint32_t g_cpu_frame_ms;
+extern uint32_t g_npu_infer_ms;
+extern uint32_t g_embed_npu_ms;
 
 /* Enrollment request flag — UI raises it; main.c actions it at end of frame. */
 volatile uint8_t g_enroll_requested = 0;
 volatile uint8_t g_enroll_done_flag = 0;
 volatile uint8_t g_enroll_fail_flag = 0;
+volatile uint8_t g_enroll_duplicate_flag = 0;
+char g_enroll_name[FACE_STORE_NAME_LEN] = {0};
 
 UI_Person_t ui_persons[UI_MAX_PERSONS];
 uint8_t ui_person_count = 0;
@@ -36,6 +42,11 @@ static uint32_t prev_btn = 0;
 static uint32_t idle_ts = 0;
 static uint32_t backoff_ts = 0;
 static uint32_t multi_person_ts = 0;
+static char pending_enroll_name[FACE_STORE_NAME_LEN];
+static int32_t pending_rename_idx = -1;
+static int32_t pending_delete_idx = -1;
+static uint8_t pending_admin_value = 0U;
+static uint32_t settings_denied_ts = 0U;
 
 /* ───────────────────────────────────────────── */
 /* COLORS                                       */
@@ -67,6 +78,53 @@ static inline uint8_t ButtonPressed(void)
     return pressed;
 }
 
+static void ResetPendingEnrollName(void)
+{
+    snprintf(pending_enroll_name,
+             sizeof(pending_enroll_name),
+             "Person %lu",
+             (unsigned long)(FaceStore_Count() + 1U));
+}
+
+static void SetPendingName(const char *name)
+{
+    memset(pending_enroll_name, 0, sizeof(pending_enroll_name));
+    if ((name != NULL) && (name[0] != '\0'))
+    {
+        strncpy(pending_enroll_name, name, sizeof(pending_enroll_name) - 1U);
+    }
+    else
+    {
+        ResetPendingEnrollName();
+    }
+}
+
+static void AddPendingNameChar(char c)
+{
+    size_t len = strlen(pending_enroll_name);
+    if (len < (sizeof(pending_enroll_name) - 1U))
+    {
+        pending_enroll_name[len] = c;
+        pending_enroll_name[len + 1U] = '\0';
+    }
+}
+
+static void BackspacePendingName(void)
+{
+    size_t len = strlen(pending_enroll_name);
+    if (len > 0U)
+    {
+        pending_enroll_name[len - 1U] = '\0';
+    }
+}
+
+static uint8_t SessionIsAdmin(void)
+{
+    return session_active &&
+           (session_user_idx >= 0) &&
+           FaceStore_IsAdmin((uint32_t)session_user_idx);
+}
+
 /* ───────────────────────────────────────────── */
 /* INIT                                         */
 /* ───────────────────────────────────────────── */
@@ -92,6 +150,7 @@ void UI_Init(void)
 
     session_user_idx = -1;
     session_active = 0U;
+    ResetPendingEnrollName();
 
     memset(ui_persons, 0, sizeof(ui_persons));
     strcpy(ui_persons[0].name, "Admin");
@@ -373,6 +432,12 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
         DrawText(0U, 228U, (uint8_t*)"Face enrolled & saved to flash",
                  CENTER_MODE, &Font20, 0xFF00FF88U, 0xDD003020U);
     }
+    else if (g_enroll_duplicate_flag)
+    {
+        Panel(120U, 200U, 560U, 80U, 0xDD302000U, 0xFFFFCC00U);
+        DrawText(0U, 228U, (uint8_t*)"This face is already enrolled",
+                 CENTER_MODE, &Font20, 0xFFFFCC00U, 0xDD302000U);
+    }
     else if (g_enroll_fail_flag)
     {
         Panel(120U, 200U, 560U, 80U, 0xDD200000U, 0xFFFF4444U);
@@ -437,6 +502,17 @@ static void DrawSettings(void)
             Panel(20U, row_y, 440U, 30U, 0xFF003315U, 0xFF00AA44U);
             DrawText(32U, row_y + 7U, (uint8_t*)rec->name,
                      LEFT_MODE, &Font16, 0xFF00FF88U, 0xFF003315U);
+            if (FaceStore_IsAdmin((uint32_t)i))
+            {
+                DrawText(300U, row_y + 7U, (uint8_t*)"ADMIN",
+                         LEFT_MODE, &Font16, 0xFFFFD600U, 0xFF003315U);
+            }
+            if (SessionIsAdmin())
+            {
+                Panel(380U, row_y, 80U, 30U, 0xFF401010U, 0xFFFF4444U);
+                DrawText(390U, row_y + 7U, (uint8_t*)"DELETE",
+                         LEFT_MODE, &Font16, 0xFFFFAAAAU, 0xFF401010U);
+            }
             shown++;
         }
         else if (ui_persons[i].active)
@@ -460,6 +536,14 @@ static void DrawSettings(void)
             (unsigned long)FaceStore_Count());
     DrawText(20U, 395U, (uint8_t*)cnt, LEFT_MODE,
              &Font16, 0xFF607080U, 0xFF111118U);
+
+    if ((settings_denied_ts != 0U) &&
+        ((HAL_GetTick() - settings_denied_ts) < 2000U))
+    {
+        Panel(40U, 360U, 390U, 42U, 0xFF301010U, 0xFFFF4444U);
+        DrawText(56U, 373U, (uint8_t*)"Only admin can edit other names",
+                 LEFT_MODE, &Font16, 0xFFFFAAAAU, 0xFF301010U);
+    }
 
     Panel(480U, 60U, 310U, 360U, 0xFF111118U, 0xFF334455U);
     DrawText(490U, 70U, (uint8_t*)"System Info",
@@ -488,14 +572,185 @@ static void DrawSettings(void)
     DrawText(490U, 270U, (uint8_t*)"Multi-person: 2+",
              LEFT_MODE, &Font16, 0xFFCCCCCCU, 0xFF111118U);
 
+    sprintf(info, "NOR flash: 128 MB");
+    DrawText(490U, 300U, (uint8_t*)info, LEFT_MODE,
+             &Font16, 0xFFCCCCCCU, 0xFF111118U);
+
+    sprintf(info, "Face store: %lu KB",
+            (unsigned long)(FACE_STORE_FLASH_SIZE / 1024U));
+    DrawText(490U, 325U, (uint8_t*)info, LEFT_MODE,
+             &Font16, 0xFFCCCCCCU, 0xFF111118U);
+
+    uint32_t used_records = FaceStore_Count();
+    uint32_t used_bytes = 16U + (used_records * (uint32_t)sizeof(FaceStore_Record_t));
+    uint32_t free_slots = (used_records < FACE_STORE_MAX_RECORDS) ?
+                          (FACE_STORE_MAX_RECORDS - used_records) : 0U;
+
+    sprintf(info, "Used: %lu B / %lu B",
+            (unsigned long)used_bytes,
+            (unsigned long)FACE_STORE_FLASH_SIZE);
+    DrawText(490U, 350U, (uint8_t*)info, LEFT_MODE,
+             &Font16, 0xFFCCCCCCU, 0xFF111118U);
+
+    sprintf(info, "Free slots: %lu / %lu",
+            (unsigned long)free_slots,
+            (unsigned long)FACE_STORE_MAX_RECORDS);
+    DrawText(490U, 375U, (uint8_t*)info, LEFT_MODE,
+             &Font16, 0xFFCCCCCCU, 0xFF111118U);
+
     Panel(0U, 430U, UI_SCREEN_W, 50U, 0xFF111122U, 0xFF00FFFFU);
     DrawText(0U, 445U, (uint8_t*)"< BACK (tap here or press USER button)",
              CENTER_MODE, &Font16, 0xFF00FFFFU, 0xFF111122U);
+
+    if (pending_delete_idx >= 0)
+    {
+        const FaceStore_Record_t *rec = FaceStore_Get((uint32_t)pending_delete_idx);
+        const char *name = (rec != NULL) ? rec->name : "person";
+        char msg[64];
+
+        Panel(120U, 160U, 560U, 190U, 0xEE101018U, 0xFFFF4444U);
+        snprintf(msg, sizeof(msg), "Delete %s?", name);
+        DrawText(0U, 190U, (uint8_t*)msg,
+                 CENTER_MODE, &Font20, 0xFFFFFFFFU, 0xEE101018U);
+        DrawText(0U, 225U, (uint8_t*)"This removes the saved face from flash",
+                 CENTER_MODE, &Font16, 0xFFFFAAAAU, 0xEE101018U);
+
+        Panel(170U, 275U, 180U, 50U, 0xFF182028U, 0xFF00AACCU);
+        DrawText(220U, 292U, (uint8_t*)"CANCEL",
+                 LEFT_MODE, &Font16, 0xFFFFFFFFU, 0xFF182028U);
+
+        Panel(450U, 275U, 180U, 50U, 0xFF401010U, 0xFFFF4444U);
+        DrawText(504U, 292U, (uint8_t*)"DELETE",
+                 LEFT_MODE, &Font16, 0xFFFFAAAAU, 0xFF401010U);
+    }
 }
 
 /* ───────────────────────────────────────────── */
 /* STATE MACHINE                                */
 /* ───────────────────────────────────────────── */
+
+static void DrawNameKey(uint32_t x, uint32_t y, uint32_t w, const char *label)
+{
+    Panel(x, y, w, 38U, 0xFF182028U, 0xFF00AACCU);
+    uint32_t text_x = x + 8U;
+    if (w == 50U)
+    {
+        text_x = x + 20U;
+    }
+    DrawText(text_x, y + 10U, (uint8_t*)label,
+             LEFT_MODE, &Font16, 0xFFFFFFFFU, 0xFF182028U);
+}
+
+static void DrawEnrollName(void)
+{
+    const uint32_t bg = 0xEE0A0A12U;
+    UTIL_LCD_FillRect(0U, 0U, UI_SCREEN_W, UI_SCREEN_H, bg);
+
+    DrawText(0U, 40U,
+             (uint8_t*)((pending_rename_idx >= 0) ? "Rename person" : "Name this face"),
+             CENTER_MODE, &Font24, 0xFF00FFFFU, bg);
+
+    Panel(120U, 92U, 560U, 48U, 0xFF101820U, 0xFF00FFFFU);
+    DrawText(0U, 108U, (uint8_t*)pending_enroll_name,
+             CENTER_MODE, &Font20, 0xFFFFFFFFU, 0xFF101820U);
+
+    if ((pending_rename_idx > 0) && SessionIsAdmin())
+    {
+        uint32_t fill = pending_admin_value ? 0xFF103020U : 0xFF182028U;
+        uint32_t border = pending_admin_value ? 0xFF00FF88U : 0xFF00AACCU;
+        Panel(580U, 92U, 100U, 48U, fill, border);
+        DrawText(598U, 108U,
+                 (uint8_t*)(pending_admin_value ? "ADMIN" : "USER"),
+                 LEFT_MODE, &Font16,
+                 pending_admin_value ? 0xFF00FF88U : 0xFFFFFFFFU,
+                 fill);
+    }
+
+    const char *keys1 = "ABCDEFGHIJKL";
+    const char *keys2 = "MNOPQRSTUVWX";
+    char label[2] = {0};
+    for (uint32_t i = 0U; i < 12U; i++)
+    {
+        label[0] = keys1[i];
+        DrawNameKey(80U + (i * 55U), 160U, 50U, label);
+        label[0] = keys2[i];
+        DrawNameKey(80U + (i * 55U), 205U, 50U, label);
+    }
+
+    DrawNameKey(245U, 250U, 50U, "Y");
+    DrawNameKey(300U, 250U, 50U, "Z");
+    DrawNameKey(355U, 250U, 105U, "SPACE");
+    DrawNameKey(465U, 250U, 105U, "DEL");
+
+    Panel(190U, 370U, 180U, 48U, 0xFF301010U, 0xFFFF4444U);
+    DrawText(248U, 385U, (uint8_t*)"CANCEL",
+             LEFT_MODE, &Font16, 0xFFFFAAAAU, 0xFF301010U);
+
+    Panel(430U, 370U, 180U, 48U, 0xFF103020U, 0xFF00FF88U);
+    if (pending_rename_idx >= 0)
+    {
+        DrawText(500U, 385U, (uint8_t*)"SAVE",
+                 LEFT_MODE, &Font16, 0xFF00FF88U, 0xFF103020U);
+    }
+    else
+    {
+        DrawText(464U, 385U, (uint8_t*)"OK / DEFAULT",
+                 LEFT_MODE, &Font16, 0xFF00FF88U, 0xFF103020U);
+    }
+}
+
+static void DrawPerfOverlay(void)
+{
+    char perf[64];
+    uint32_t npu_total_ms = g_npu_infer_ms + g_embed_npu_ms;
+    uint32_t total_ms = g_cpu_frame_ms + npu_total_ms;
+    uint32_t cpu_pct = 0U;
+    uint32_t npu_pct = 0U;
+
+    if (total_ms > 0U)
+    {
+        cpu_pct = (g_cpu_frame_ms * 100U) / total_ms;
+        npu_pct = (npu_total_ms * 100U) / total_ms;
+    }
+
+    snprintf(perf, sizeof(perf), "CPU %lums/%lu%%  NPU %lums/%lu%%",
+             (unsigned long)g_cpu_frame_ms,
+             (unsigned long)cpu_pct,
+             (unsigned long)npu_total_ms,
+             (unsigned long)npu_pct);
+
+    uint32_t back_col = 0x00000000U;
+    uint32_t text_col = 0xFFB0FFE8U;
+
+    if (app_state == APP_STATE_SPLASH)
+    {
+        back_col = 0xFF0000FFU;
+        text_col = 0xFFFFFFFFU;
+    }
+    else if (app_state == APP_STATE_SETTINGS)
+    {
+        back_col = 0xFF111122U;
+        text_col = 0xFFB0FFE8U;
+    }
+    else if (app_state == APP_STATE_ENROLL_NAME)
+    {
+        back_col = 0xEE0A0A12U;
+        text_col = 0xFFB0FFE8U;
+    }
+    else if (app_state == APP_STATE_AUTH_SUCCESS)
+    {
+        back_col = 0xEE0A0A12U;
+        text_col = 0xFFB0FFE8U;
+    }
+    else if (app_state == APP_STATE_BACKING_OFF)
+    {
+        back_col = 0xDD000000U;
+        text_col = 0xFFFFAAAAU;
+    }
+
+    DrawText(4U, 3U, (uint8_t*)perf,
+             LEFT_MODE, &Font12, text_col, back_col);
+}
 
 #define _TB_ADD_PERSON  1U
 #define _TB_SETTINGS    2U
@@ -587,7 +842,9 @@ AppState_t UI_UpdateState(od_pp_out_t *pp, uint32_t touch_btn)
         }
         else if (touch_btn == _TB_ADD_PERSON)
         {
-            g_enroll_requested = 1U;
+            pending_rename_idx = -1;
+            ResetPendingEnrollName();
+            app_state = APP_STATE_ENROLL_NAME;
             state_entry_time = now;
         }
         break;
@@ -598,9 +855,108 @@ AppState_t UI_UpdateState(od_pp_out_t *pp, uint32_t touch_btn)
         break;
 
     case APP_STATE_SETTINGS:
-        if (btn || touch_btn == _TB_BACK)
+        if (pending_delete_idx >= 0)
+        {
+            if ((touch_btn == TOUCH_BTN_CANCEL_DELETE) || btn || (touch_btn == _TB_BACK))
+            {
+                pending_delete_idx = -1;
+                state_entry_time = now;
+            }
+            else if (touch_btn == TOUCH_BTN_CONFIRM_DELETE)
+            {
+                if (FaceStore_Remove((uint32_t)pending_delete_idx))
+                {
+                    (void)FaceStore_Commit();
+                }
+                pending_delete_idx = -1;
+                state_entry_time = now;
+            }
+        }
+        else if (btn || touch_btn == _TB_BACK)
         {
             app_state = APP_STATE_MAIN;
+            state_entry_time = now;
+        }
+        else if ((touch_btn >= TOUCH_BTN_DELETE_0) && (touch_btn <= TOUCH_BTN_DELETE_7))
+        {
+            uint32_t idx = (uint32_t)(touch_btn - TOUCH_BTN_DELETE_0);
+            const FaceStore_Record_t *rec = FaceStore_Get(idx);
+            if ((rec != NULL) && SessionIsAdmin())
+            {
+                pending_delete_idx = (int32_t)idx;
+                state_entry_time = now;
+            }
+        }
+        else if ((touch_btn >= TOUCH_BTN_PERSON_0) && (touch_btn <= TOUCH_BTN_PERSON_7))
+        {
+            uint32_t idx = (uint32_t)(touch_btn - TOUCH_BTN_PERSON_0);
+            const FaceStore_Record_t *rec = FaceStore_Get(idx);
+            if (rec != NULL)
+            {
+                uint8_t is_admin = SessionIsAdmin();
+                uint8_t is_self = (session_active && (session_user_idx == (int32_t)idx));
+
+                if (is_admin || is_self)
+                {
+                    pending_rename_idx = (int32_t)idx;
+                    pending_admin_value = FaceStore_IsAdmin(idx) ? 1U : 0U;
+                    SetPendingName(rec->name);
+                    app_state = APP_STATE_ENROLL_NAME;
+                    state_entry_time = now;
+                }
+                else
+                {
+                    settings_denied_ts = now;
+                }
+            }
+        }
+        break;
+
+    case APP_STATE_ENROLL_NAME:
+        if ((touch_btn >= TOUCH_BTN_NAME_A) && (touch_btn <= TOUCH_BTN_NAME_Z))
+        {
+            AddPendingNameChar((char)('A' + (touch_btn - TOUCH_BTN_NAME_A)));
+        }
+        else if (touch_btn == TOUCH_BTN_NAME_BACKSPACE)
+        {
+            BackspacePendingName();
+        }
+        else if (touch_btn == TOUCH_BTN_NAME_SPACE)
+        {
+            AddPendingNameChar(' ');
+        }
+        else if ((touch_btn == TOUCH_BTN_ADMIN_TOGGLE) &&
+                 (pending_rename_idx > 0) &&
+                 SessionIsAdmin())
+        {
+            pending_admin_value = pending_admin_value ? 0U : 1U;
+        }
+        else if (touch_btn == TOUCH_BTN_NAME_OK)
+        {
+            if (pending_rename_idx >= 0)
+            {
+                (void)FaceStore_Rename((uint32_t)pending_rename_idx, pending_enroll_name);
+                if ((pending_rename_idx > 0) && SessionIsAdmin())
+                {
+                    (void)FaceStore_SetAdmin((uint32_t)pending_rename_idx,
+                                             pending_admin_value != 0U);
+                }
+                pending_rename_idx = -1;
+                app_state = APP_STATE_SETTINGS;
+            }
+            else
+            {
+                strncpy(g_enroll_name, pending_enroll_name, sizeof(g_enroll_name) - 1U);
+                g_enroll_name[sizeof(g_enroll_name) - 1U] = '\0';
+                g_enroll_requested = 1U;
+                app_state = APP_STATE_MAIN;
+            }
+            state_entry_time = now;
+        }
+        else if ((touch_btn == TOUCH_BTN_NAME_CANCEL) || btn)
+        {
+            app_state = (pending_rename_idx >= 0) ? APP_STATE_SETTINGS : APP_STATE_MAIN;
+            pending_rename_idx = -1;
             state_entry_time = now;
         }
         break;
@@ -644,7 +1000,13 @@ void UI_Render(od_pp_out_t *pp, UI_BgArea_t *bg)
         DrawSettings();
         break;
 
+    case APP_STATE_ENROLL_NAME:
+        DrawEnrollName();
+        break;
+
     default:
         break;
     }
+
+    DrawPerfOverlay();
 }

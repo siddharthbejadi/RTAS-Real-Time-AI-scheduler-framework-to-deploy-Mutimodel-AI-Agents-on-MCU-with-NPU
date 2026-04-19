@@ -52,7 +52,8 @@ extern "C" {
 typedef struct {
     char      name[FACE_STORE_NAME_LEN];
     uint8_t   active;                              /* 1 = slot used */
-    uint8_t   _pad[3];
+    uint8_t   is_admin;                            /* 1 = can manage users */
+    uint8_t   _pad[2];
     float     embedding[FACE_STORE_EMB_DIM];
     /* optional small thumbnail stored for later visual confirmation */
     uint8_t   thumb[48 * 48 * 2];                  /* 48x48 RGB565 = 4.5 KB */
@@ -94,6 +95,15 @@ bool FaceStore_Add(const char *name,
 
 /** @brief  Remove record at index. Returns true on success. */
 bool FaceStore_Remove(uint32_t index);
+
+/** @brief  Rename record at index and commit to flash. Returns true on success. */
+bool FaceStore_Rename(uint32_t index, const char *name);
+
+/** @brief  Change admin role at index and commit to flash. Person 1 stays admin. */
+bool FaceStore_SetAdmin(uint32_t index, bool is_admin);
+
+/** @brief  True if record is an admin. Person 1/index 0 is always admin. */
+bool FaceStore_IsAdmin(uint32_t index);
 
 /** @brief  Clear all enrollments (erases flash sector). */
 bool FaceStore_ClearAll(void);

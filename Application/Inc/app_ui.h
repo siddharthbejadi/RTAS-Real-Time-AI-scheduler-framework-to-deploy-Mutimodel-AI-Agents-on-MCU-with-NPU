@@ -115,6 +115,7 @@ typedef enum {
     APP_STATE_MAIN        = 3,  /* live detection + toolbar                 */
     APP_STATE_BACKING_OFF = 4,  /* ≥ UI_BACKOFF_COUNT detections            */
     APP_STATE_SETTINGS    = 5,  /* manage authorized persons                */
+    APP_STATE_ENROLL_NAME = 6,  /* choose display name before enrolment     */
 } AppState_t;
 
 /* ─────────────────────────────────────────────────────────────────────────── */

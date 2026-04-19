@@ -64,9 +64,62 @@ static const ButtonMap_t s_main_map[] = {
  * Settings screen — BACK bar is drawn full-width at y=430, height=50
  */
 static const ButtonMap_t s_settings_map[] = {
+    { 380U, 105U,  80U, 30U, TOUCH_BTN_DELETE_0 },
+    { 380U, 141U,  80U, 30U, TOUCH_BTN_DELETE_1 },
+    { 380U, 177U,  80U, 30U, TOUCH_BTN_DELETE_2 },
+    { 380U, 213U,  80U, 30U, TOUCH_BTN_DELETE_3 },
+    { 380U, 249U,  80U, 30U, TOUCH_BTN_DELETE_4 },
+    { 380U, 285U,  80U, 30U, TOUCH_BTN_DELETE_5 },
+    { 380U, 321U,  80U, 30U, TOUCH_BTN_DELETE_6 },
+    { 380U, 357U,  80U, 30U, TOUCH_BTN_DELETE_7 },
+    { 170U, 275U, 180U, 50U, TOUCH_BTN_CANCEL_DELETE },
+    { 450U, 275U, 180U, 50U, TOUCH_BTN_CONFIRM_DELETE },
+    { 20U, 105U, 440U, 30U, TOUCH_BTN_PERSON_0 },
+    { 20U, 141U, 440U, 30U, TOUCH_BTN_PERSON_1 },
+    { 20U, 177U, 440U, 30U, TOUCH_BTN_PERSON_2 },
+    { 20U, 213U, 440U, 30U, TOUCH_BTN_PERSON_3 },
+    { 20U, 249U, 440U, 30U, TOUCH_BTN_PERSON_4 },
+    { 20U, 285U, 440U, 30U, TOUCH_BTN_PERSON_5 },
+    { 20U, 321U, 440U, 30U, TOUCH_BTN_PERSON_6 },
+    { 20U, 357U, 440U, 30U, TOUCH_BTN_PERSON_7 },
     { 0U, 430U, 800U, 50U, TOUCH_BTN_BACK },
 };
 #define SETTINGS_MAP_COUNT  (sizeof(s_settings_map) / sizeof(s_settings_map[0]))
+
+static const ButtonMap_t s_name_map[] = {
+    {  80U, 160U, 50U, 38U, TOUCH_BTN_NAME_A },
+    { 135U, 160U, 50U, 38U, TOUCH_BTN_NAME_B },
+    { 190U, 160U, 50U, 38U, TOUCH_BTN_NAME_C },
+    { 245U, 160U, 50U, 38U, TOUCH_BTN_NAME_D },
+    { 300U, 160U, 50U, 38U, TOUCH_BTN_NAME_E },
+    { 355U, 160U, 50U, 38U, TOUCH_BTN_NAME_F },
+    { 410U, 160U, 50U, 38U, TOUCH_BTN_NAME_G },
+    { 465U, 160U, 50U, 38U, TOUCH_BTN_NAME_H },
+    { 520U, 160U, 50U, 38U, TOUCH_BTN_NAME_I },
+    { 575U, 160U, 50U, 38U, TOUCH_BTN_NAME_J },
+    { 630U, 160U, 50U, 38U, TOUCH_BTN_NAME_K },
+    { 685U, 160U, 50U, 38U, TOUCH_BTN_NAME_L },
+    {  80U, 205U, 50U, 38U, TOUCH_BTN_NAME_M },
+    { 135U, 205U, 50U, 38U, TOUCH_BTN_NAME_N },
+    { 190U, 205U, 50U, 38U, TOUCH_BTN_NAME_O },
+    { 245U, 205U, 50U, 38U, TOUCH_BTN_NAME_P },
+    { 300U, 205U, 50U, 38U, TOUCH_BTN_NAME_Q },
+    { 355U, 205U, 50U, 38U, TOUCH_BTN_NAME_R },
+    { 410U, 205U, 50U, 38U, TOUCH_BTN_NAME_S },
+    { 465U, 205U, 50U, 38U, TOUCH_BTN_NAME_T },
+    { 520U, 205U, 50U, 38U, TOUCH_BTN_NAME_U },
+    { 575U, 205U, 50U, 38U, TOUCH_BTN_NAME_V },
+    { 630U, 205U, 50U, 38U, TOUCH_BTN_NAME_W },
+    { 685U, 205U, 50U, 38U, TOUCH_BTN_NAME_X },
+    { 245U, 250U, 50U, 38U, TOUCH_BTN_NAME_Y },
+    { 300U, 250U, 50U, 38U, TOUCH_BTN_NAME_Z },
+    { 355U, 250U, 105U, 38U, TOUCH_BTN_NAME_SPACE },
+    { 465U, 250U, 105U, 38U, TOUCH_BTN_NAME_BACKSPACE },
+    { 580U, 92U, 100U, 48U, TOUCH_BTN_ADMIN_TOGGLE },
+    { 190U, 370U, 180U, 48U, TOUCH_BTN_NAME_CANCEL },
+    { 430U, 370U, 180U, 48U, TOUCH_BTN_NAME_OK },
+};
+#define NAME_MAP_COUNT  (sizeof(s_name_map) / sizeof(s_name_map[0]))
 
 /*
  * GT911 physical sensor range on the STM32N6570-DK:
@@ -76,8 +129,10 @@ static const ButtonMap_t s_settings_map[] = {
  * The config registers return 800×480 (the logical target), but the chip
  * still outputs raw sensor coordinates — so we hardcode the physical range.
  */
-#define GT911_LOGICAL_X_MAX   800U
-#define GT911_LOGICAL_Y_MAX   480U
+#define GT911_RAW_X_MAX       51200U
+#define GT911_RAW_Y_MAX       7680U
+#define GT911_SCREEN_X_MAX    800U
+#define GT911_SCREEN_Y_MAX    480U
 
 /* ── Module state ────────────────────────────────────────────────────────── */
 static uint8_t s_finger_down = 0U;
@@ -181,8 +236,9 @@ void Touch_Init(void)
      * but the chip outputs raw physical sensor coordinates up to 51200×7680.
      * We hardcode the physical range and scale down to screen pixels.
      */
-    printf("Touch: using logical range %u x %u\n",
-           (unsigned)GT911_LOGICAL_X_MAX, (unsigned)GT911_LOGICAL_Y_MAX);
+    printf("Touch: scaling raw range %u x %u to screen %u x %u\n",
+           (unsigned)GT911_RAW_X_MAX, (unsigned)GT911_RAW_Y_MAX,
+           (unsigned)GT911_SCREEN_X_MAX, (unsigned)GT911_SCREEN_Y_MAX);
 
     /* Step 5 — Clear any stale touch buffer */
     _gt_clear();
@@ -221,11 +277,22 @@ TouchButton_t Touch_GetButton(AppState_t state)
     uint16_t raw_x = (uint16_t)tp[1] | ((uint16_t)tp[2] << 8U);
     uint16_t raw_y = (uint16_t)tp[3] | ((uint16_t)tp[4] << 8U);
 
-    uint32_t tx_val = raw_x;
-    uint32_t ty_val = raw_y;
+    uint32_t tx_val;
+    uint32_t ty_val;
 
-    if (tx_val >= GT911_LOGICAL_X_MAX) tx_val = GT911_LOGICAL_X_MAX - 1U;
-    if (ty_val >= GT911_LOGICAL_Y_MAX) ty_val = GT911_LOGICAL_Y_MAX - 1U;
+    if ((raw_x < GT911_SCREEN_X_MAX) && (raw_y < GT911_SCREEN_Y_MAX))
+    {
+        tx_val = raw_x;
+        ty_val = raw_y;
+    }
+    else
+    {
+        tx_val = ((uint32_t)raw_x * GT911_SCREEN_X_MAX) / GT911_RAW_X_MAX;
+        ty_val = ((uint32_t)raw_y * GT911_SCREEN_Y_MAX) / GT911_RAW_Y_MAX;
+    }
+
+    if (tx_val >= GT911_SCREEN_X_MAX) tx_val = GT911_SCREEN_X_MAX - 1U;
+    if (ty_val >= GT911_SCREEN_Y_MAX) ty_val = GT911_SCREEN_Y_MAX - 1U;
 
     uint16_t tx = (uint16_t)tx_val;
     uint16_t ty = (uint16_t)ty_val;
@@ -239,6 +306,9 @@ TouchButton_t Touch_GetButton(AppState_t state)
             break;
         case APP_STATE_SETTINGS:
             result = ButtonMap_Check(tx, ty, s_settings_map, SETTINGS_MAP_COUNT);
+            break;
+        case APP_STATE_ENROLL_NAME:
+            result = ButtonMap_Check(tx, ty, s_name_map, NAME_MAP_COUNT);
             break;
         default:
             break;

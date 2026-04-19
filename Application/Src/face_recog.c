@@ -41,6 +41,8 @@ static bool s_ready = false;
 static bool s_ready = false;
 #endif
 
+uint32_t g_embed_npu_ms = 0U;
+
 /* ───── Helpers ───────────────────────────────────────────────────────────── */
 
 #if defined(HAVE_RECOG_NETWORK) && (HAVE_RECOG_NETWORK != 0)
@@ -147,10 +149,12 @@ FaceRecog_Status_t FaceRecog_Extract(const uint8_t *rgb_frame,
     SCB_CleanInvalidateDCache_by_Addr((void *)s_recog_in, s_recog_in_bytes);
 
     /* Run inference (sync). */
+    uint32_t npu_start = HAL_GetTick();
     stai_return_code ret;
     do {
         ret = stai_network_embed_run(s_recog_ctx, STAI_MODE_SYNC);
     } while (ret == STAI_RUNNING_WFE || ret == STAI_RUNNING_NO_WFE);
+    g_embed_npu_ms = HAL_GetTick() - npu_start;
     if (ret != STAI_SUCCESS) return FACE_RECOG_ERR_NPU;
 
     /* Copy out embedding (first output). */
@@ -199,16 +203,46 @@ bool FaceRecog_EnrollFromFrame(const char *name,
                                uint32_t frame_h,
                                const od_pp_outBuffer_t *bbox)
 {
+    return FaceRecog_EnrollFromFrameEx(name, rgb_frame, frame_w, frame_h,
+                                       bbox, NULL, NULL) == FACE_ENROLL_OK;
+}
+
+FaceEnroll_Status_t FaceRecog_EnrollFromFrameEx(const char *name,
+                                                const uint8_t *rgb_frame,
+                                                uint32_t frame_w,
+                                                uint32_t frame_h,
+                                                const od_pp_outBuffer_t *bbox,
+                                                uint32_t *matched_index,
+                                                float *matched_score)
+{
     float emb[FACE_STORE_EMB_DIM];
     FaceRecog_Status_t st = FaceRecog_Extract(rgb_frame, frame_w, frame_h,
                                               bbox, emb);
+    if (matched_index) *matched_index = UINT32_MAX;
+    if (matched_score) *matched_score = 0.0f;
+
     if (st != FACE_RECOG_OK) {
         printf("[FaceRecog] Enrol: extract failed (%d)\r\n", (int)st);
-        return false;
+        return FACE_ENROLL_ERR_EXTRACT;
     }
+
+    uint32_t dup_idx = 0U;
+    float dup_score = 0.0f;
+    if (FaceStore_Match(emb, &dup_idx, &dup_score, FACE_RECOG_MATCH_THRESHOLD)) {
+        if (matched_index) *matched_index = dup_idx;
+        if (matched_score) *matched_score = dup_score;
+        printf("[FaceRecog] Enrol: duplicate face index=%lu score=%.3f\r\n",
+               (unsigned long)dup_idx,
+               dup_score);
+        return FACE_ENROLL_ERR_DUPLICATE;
+    }
+
     if (!FaceStore_Add(name, emb, NULL)) {
         printf("[FaceRecog] Enrol: store full\r\n");
-        return false;
+        return FACE_ENROLL_ERR_STORE;
     }
-    return FaceStore_Commit();
+    if (!FaceStore_Commit()) {
+        return FACE_ENROLL_ERR_COMMIT;
+    }
+    return FACE_ENROLL_OK;
 }

@@ -46,6 +46,14 @@ typedef enum {
     FACE_RECOG_ERR_NPU       = -3,
 } FaceRecog_Status_t;
 
+typedef enum {
+    FACE_ENROLL_OK            = 0,
+    FACE_ENROLL_ERR_EXTRACT   = -1,
+    FACE_ENROLL_ERR_DUPLICATE = -2,
+    FACE_ENROLL_ERR_STORE     = -3,
+    FACE_ENROLL_ERR_COMMIT    = -4,
+} FaceEnroll_Status_t;
+
 /**
  * @brief  One-time initialisation.  Boots the 2nd stai_network_* context
  *         when HAVE_RECOG_NETWORK is defined.  No-op otherwise.
@@ -94,6 +102,14 @@ bool FaceRecog_EnrollFromFrame(const char *name,
                                uint32_t frame_w,
                                uint32_t frame_h,
                                const od_pp_outBuffer_t *bbox);
+
+FaceEnroll_Status_t FaceRecog_EnrollFromFrameEx(const char *name,
+                                                const uint8_t *rgb_frame,
+                                                uint32_t frame_w,
+                                                uint32_t frame_h,
+                                                const od_pp_outBuffer_t *bbox,
+                                                uint32_t *matched_index,
+                                                float *matched_score);
 
 #ifdef __cplusplus
 }

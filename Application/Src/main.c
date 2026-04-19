@@ -165,11 +165,16 @@ od_pp_out_t pp_output;
 int32_t  last_recog_idx   = -1;
 float    last_recog_score = 0.0f;
 float    last_det_conf    = 0.0f;
+uint32_t g_cpu_frame_ms   = 0U;
+uint32_t g_npu_infer_ms   = 0U;
+extern uint32_t g_embed_npu_ms;
 
 /* Enrollment request flags from UI */
 extern volatile uint8_t g_enroll_requested;
 extern volatile uint8_t g_enroll_done_flag;
 extern volatile uint8_t g_enroll_fail_flag;
+extern volatile uint8_t g_enroll_duplicate_flag;
+extern char g_enroll_name[FACE_STORE_NAME_LEN];
 static uint32_t enroll_toast_ts = 0U;
 
 /* -------------------------------------------------------------------------- */
@@ -355,6 +360,7 @@ int main(void)
     cameraFrameReceived = 0;
 
     uint32_t ts[2] = {0U, 0U};
+    uint32_t frame_cpu_start = HAL_GetTick();
 
     /* Ensure CPU sees the fresh DCMIPP-written buffer */
     SCB_InvalidateDCache_by_Addr((void *)nn_in_u8, DCMIPP_OUT_NN_BUFF_LEN);
@@ -400,6 +406,7 @@ int main(void)
     ts[0] = HAL_GetTick();
     Run_Inference(network_context);
     ts[1] = HAL_GetTick();
+    g_npu_infer_ms = ts[1] - ts[0];
 
     ret = app_postprocess_run((void **)nn_out, number_output, &pp_output, &pp_params);
     assert(ret == 0);
@@ -408,6 +415,7 @@ int main(void)
     last_recog_idx = -1;
     last_recog_score = 0.0f;
     last_det_conf = 0.0f;
+    g_embed_npu_ms = 0U;
 
     int32_t best_idx = -1;
 
@@ -442,6 +450,7 @@ int main(void)
       g_enroll_requested = 0U;
       g_enroll_done_flag = 0U;
       g_enroll_fail_flag = 0U;
+      g_enroll_duplicate_flag = 0U;
 
       if ((best_idx >= 0) &&
           (last_det_conf >= FACE_RECOG_MIN_DET_CONF) &&
@@ -452,20 +461,39 @@ int main(void)
                  sizeof(default_name),
                  "Person %lu",
                  (unsigned long)(FaceStore_Count() + 1U));
+        if (g_enroll_name[0] != '\0')
+        {
+          strncpy(default_name, g_enroll_name, sizeof(default_name) - 1U);
+          default_name[sizeof(default_name) - 1U] = '\0';
+          g_enroll_name[0] = '\0';
+        }
 
-        bool ok = FaceRecog_EnrollFromFrame(default_name,
-                                            (const uint8_t *)nn_src_u8,
-                                            STAI_NETWORK_IN_1_WIDTH,
-                                            STAI_NETWORK_IN_1_HEIGHT,
-                                            &pp_output.pOutBuff[best_idx]);
+        uint32_t matched_index = UINT32_MAX;
+        float matched_score = 0.0f;
+        FaceEnroll_Status_t enroll_status =
+            FaceRecog_EnrollFromFrameEx(default_name,
+                                        (const uint8_t *)nn_src_u8,
+                                        STAI_NETWORK_IN_1_WIDTH,
+                                        STAI_NETWORK_IN_1_HEIGHT,
+                                        &pp_output.pOutBuff[best_idx],
+                                        &matched_index,
+                                        &matched_score);
 
-        if (ok)
+        if (enroll_status == FACE_ENROLL_OK)
         {
           g_enroll_done_flag = 1U;
           enroll_toast_ts = HAL_GetTick();
           printf("[Enroll] saved '%s' (total=%lu)\r\n",
                  default_name,
                  (unsigned long)FaceStore_Count());
+        }
+        else if (enroll_status == FACE_ENROLL_ERR_DUPLICATE)
+        {
+          g_enroll_duplicate_flag = 1U;
+          enroll_toast_ts = HAL_GetTick();
+          printf("[Enroll] duplicate face, matched index=%lu score=%.3f\r\n",
+                 (unsigned long)matched_index,
+                 matched_score);
         }
         else
         {
@@ -476,20 +504,29 @@ int main(void)
       }
       else
       {
+        g_enroll_name[0] = '\0';
         g_enroll_fail_flag = 1U;
         enroll_toast_ts = HAL_GetTick();
         printf("[Enroll] failed: no suitable face or recognizer not ready\r\n");
       }
     }
 
-    if ((g_enroll_done_flag || g_enroll_fail_flag) &&
+    if ((g_enroll_done_flag || g_enroll_fail_flag || g_enroll_duplicate_flag) &&
         ((HAL_GetTick() - enroll_toast_ts) > 2000U))
     {
       g_enroll_done_flag = 0U;
       g_enroll_fail_flag = 0U;
+      g_enroll_duplicate_flag = 0U;
     }
 
-    Display_NetworkOutput(&pp_output, ts[1] - ts[0]);
+    {
+      uint32_t frame_elapsed = HAL_GetTick() - frame_cpu_start;
+      uint32_t npu_total_ms = g_npu_infer_ms + g_embed_npu_ms;
+      g_cpu_frame_ms = (frame_elapsed > npu_total_ms) ?
+                       (frame_elapsed - npu_total_ms) : frame_elapsed;
+    }
+
+    Display_NetworkOutput(&pp_output, g_npu_infer_ms);
 
     /*
      * Invalidate network outputs after use, so next inference/postprocess
