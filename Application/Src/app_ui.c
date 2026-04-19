@@ -79,7 +79,16 @@ void UI_Init(void)
     idle_ts = 0U;
     backoff_ts = 0U;
     multi_person_ts = 0U;
-    prev_btn = 0U;
+    /* Init USER1 button as simple GPIO input (avoids pulling in EXTI HAL) */
+    BUTTON_USER1_GPIO_CLK_ENABLE();
+    GPIO_InitTypeDef gpio = {0};
+    gpio.Pin   = BUTTON_USER1_PIN;
+    gpio.Mode  = GPIO_MODE_INPUT;
+    gpio.Pull  = GPIO_PULLDOWN;
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(BUTTON_USER1_GPIO_PORT, &gpio);
+
+    prev_btn = HAL_GPIO_ReadPin(BUTTON_USER1_GPIO_PORT, BUTTON_USER1_PIN);
 
     session_user_idx = -1;
     session_active = 0U;

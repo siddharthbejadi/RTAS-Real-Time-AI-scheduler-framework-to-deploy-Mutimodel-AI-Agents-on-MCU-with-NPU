@@ -27,10 +27,18 @@
 #include <stdio.h>
 
 /* ── GT911 constants ─────────────────────────────────────────────────────── */
-#define GT911_ADDR          0xBAU   /* 8-bit write address (7-bit = 0x5D)   */
+/*
+ * GT911 I2C address depends on INT level during reset:
+ * - 0x5D (7-bit) => 0xBA (8-bit, HAL expects 7-bit<<1)
+ * - 0x14 (7-bit) => 0x28 (8-bit)
+ *
+ * If INT is left floating/board-default, either can happen; probe both.
+ */
+#define GT911_ADDR_0x5D     0xBAU
+#define GT911_ADDR_0x14     0x28U
 #define GT911_REG_PRODUCT   0x8140U /* Product ID — should read "911"        */
 #define GT911_REG_STATUS    0x814EU /* Buffer status + touch count           */
-#define GT911_REG_TP0       0x8150U /* Touch point 0 data (8 bytes)         */
+#define GT911_REG_TP0       0x814FU /* Track ID + touch point 0 data        */
 
 /* ── Button maps — one table per screen ─────────────────────────────────── */
 /*
@@ -68,11 +76,12 @@ static const ButtonMap_t s_settings_map[] = {
  * The config registers return 800×480 (the logical target), but the chip
  * still outputs raw sensor coordinates — so we hardcode the physical range.
  */
-#define GT911_PHYS_X_MAX   51200U
-#define GT911_PHYS_Y_MAX   10000U
+#define GT911_LOGICAL_X_MAX   800U
+#define GT911_LOGICAL_Y_MAX   480U
 
 /* ── Module state ────────────────────────────────────────────────────────── */
 static uint8_t s_finger_down = 0U;
+static uint16_t s_gt911_addr = GT911_ADDR_0x5D;
 
 /* ── Private helpers ─────────────────────────────────────────────────────── */
 
@@ -81,7 +90,7 @@ static uint8_t s_finger_down = 0U;
  */
 static inline int32_t _gt_read(uint16_t reg, uint8_t *buf, uint16_t len)
 {
-    return BSP_I2C2_ReadReg16(GT911_ADDR, reg, buf, len);
+    return BSP_I2C2_ReadReg16(s_gt911_addr, reg, buf, len);
 }
 
 /**
@@ -89,7 +98,7 @@ static inline int32_t _gt_read(uint16_t reg, uint8_t *buf, uint16_t len)
  */
 static inline int32_t _gt_write(uint16_t reg, uint8_t *buf, uint16_t len)
 {
-    return BSP_I2C2_WriteReg16(GT911_ADDR, reg, buf, len);
+    return BSP_I2C2_WriteReg16(s_gt911_addr, reg, buf, len);
 }
 
 /**
@@ -155,7 +164,13 @@ void Touch_Init(void)
     /* Step 3 — Verify GT911 is alive (product ID = "911") */
     uint8_t pid[4] = {0};
     int32_t rc = _gt_read(GT911_REG_PRODUCT, pid, 4U);
+    if (rc != BSP_ERROR_NONE)
+    {
+        s_gt911_addr = GT911_ADDR_0x14;
+        rc = _gt_read(GT911_REG_PRODUCT, pid, 4U);
+    }
     if (rc == BSP_ERROR_NONE) {
+        printf("Touch: GT911 I2C addr=0x%02X\n", (unsigned)(s_gt911_addr & 0xFFU));
         printf("Touch: GT911 found — ID=%c%c%c\n", pid[0], pid[1], pid[2]);
     } else {
         printf("Touch: GT911 not responding (I2C err %ld)\n", (long)rc);
@@ -166,8 +181,8 @@ void Touch_Init(void)
      * but the chip outputs raw physical sensor coordinates up to 51200×7680.
      * We hardcode the physical range and scale down to screen pixels.
      */
-    printf("Touch: using physical range %u x %u → screen 800 x 480\n",
-           (unsigned)GT911_PHYS_X_MAX, (unsigned)GT911_PHYS_Y_MAX);
+    printf("Touch: using logical range %u x %u\n",
+           (unsigned)GT911_LOGICAL_X_MAX, (unsigned)GT911_LOGICAL_Y_MAX);
 
     /* Step 5 — Clear any stale touch buffer */
     _gt_clear();
@@ -206,15 +221,11 @@ TouchButton_t Touch_GetButton(AppState_t state)
     uint16_t raw_x = (uint16_t)tp[1] | ((uint16_t)tp[2] << 8U);
     uint16_t raw_y = (uint16_t)tp[3] | ((uint16_t)tp[4] << 8U);
 
-    // THE ROTATED & CALIBRATED FIX
-    // We map RAW X to SCREEN X (inverted) and RAW Y to SCREEN Y (inverted)
-    // Based on your specific RAW logs, this is the alignment:
-    uint32_t tx_val = 799U - (((uint32_t)raw_x * 800U) / GT911_PHYS_X_MAX);
-    uint32_t ty_val = 479U - (((uint32_t)raw_y * 480U) / GT911_PHYS_Y_MAX);
+    uint32_t tx_val = raw_x;
+    uint32_t ty_val = raw_y;
 
-    // Safety Clamping
-    if (tx_val > 799) tx_val = 0;
-    if (ty_val > 479) ty_val = 0;
+    if (tx_val >= GT911_LOGICAL_X_MAX) tx_val = GT911_LOGICAL_X_MAX - 1U;
+    if (ty_val >= GT911_LOGICAL_Y_MAX) ty_val = GT911_LOGICAL_Y_MAX - 1U;
 
     uint16_t tx = (uint16_t)tx_val;
     uint16_t ty = (uint16_t)ty_val;
