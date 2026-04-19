@@ -273,29 +273,26 @@ static void DrawAuth(od_pp_out_t *pp)
 
 static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
 {
-    const uint32_t screen_bg = 0xEE0A0A12U;
+    const uint32_t screen_bg = 0x00000000U;
     uint32_t nb = pp->nb_detect;
     od_pp_outBuffer_t *r = pp->pOutBuff;
 
     UTIL_LCD_FillRect(0U, 0U, UI_SCREEN_W, UI_SCREEN_H, screen_bg);
 
     /* Camera PiP window — tuned for 800x480 landscape */
-    uint32_t cam_x = 500U;
-    uint32_t cam_y = 120U;
-    uint32_t cam_w = 250U;
-    uint32_t cam_h = 200U;
+    uint32_t cam_x = 0U;
+    uint32_t cam_y = 0U;
+    uint32_t cam_w = UI_SCREEN_W;
+    uint32_t cam_h = UI_SCREEN_H;
 
     /* If caller provides a valid bg area, prefer that */
     if (bg != NULL)
     {
-        cam_x = bg->X0 + bg->XSize / 2U;
-        cam_y = 10U;
-        cam_w = bg->XSize / 2U;
-        cam_h = 200U;
+        cam_x = bg->X0;
+        cam_y = bg->Y0;
+        cam_w = bg->XSize;
+        cam_h = bg->YSize;
     }
-
-    UTIL_LCD_FillRect(cam_x, cam_y, cam_w, cam_h, 0x00000000U);
-    UTIL_LCD_DrawRect(cam_x - 2U, cam_y - 2U, cam_w + 4U, cam_h + 4U, 0xFF00FFFFU);
 
     if ((r != NULL) && (nb > 0U))
     {
@@ -327,16 +324,10 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
         }
     }
 
-    DrawText(30U, 40U, (uint8_t*)"MAIN ACCESS PANEL",
-             LEFT_MODE, &Font20, 0xFF00FFFFU, screen_bg);
-
-    DrawText(30U, 80U, (uint8_t*)"Access granted.",
-             LEFT_MODE, &Font20, 0xFF00FF88U, screen_bg);
-
     char namebuf[48];
     snprintf(namebuf, sizeof(namebuf), "Welcome: %s", who);
-    DrawText(30U, 110U, (uint8_t*)namebuf,
-             LEFT_MODE, &Font20, name_col, screen_bg);
+    DrawText(560U, 20U, (uint8_t*)namebuf,
+             LEFT_MODE, &Font16, name_col, screen_bg);
 
     if ((r != NULL) && (nb > 0U))
     {
@@ -348,8 +339,8 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
         snprintf(line2, sizeof(line2), "Camera active / session unlocked");
     }
 
-    DrawText(30U, 140U, (uint8_t*)line2,
-             LEFT_MODE, &Font16, 0xFF8090A0U, screen_bg);
+    DrawText(560U, 44U, (uint8_t*)line2,
+             LEFT_MODE, &Font16, 0xFFFFFFFFU, screen_bg);
 
 
     /* Bottom toolbar — corrected for 800x480 landscape */

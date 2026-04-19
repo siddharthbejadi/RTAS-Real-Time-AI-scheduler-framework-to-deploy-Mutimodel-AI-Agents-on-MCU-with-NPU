@@ -104,11 +104,7 @@ volatile uint32_t g_nn_input_count = 0U;
 volatile uint32_t g_nn_output_count = 0U;
 /* Camera preview area */
 Rectangle_TypeDef lcd_bg_area = {
-#if ASPECT_RATIO_MODE == ASPECT_RATIO_CROP || ASPECT_RATIO_MODE == ASPECT_RATIO_FIT
-  .X0 = (LCD_FG_WIDTH - LCD_FG_HEIGHT) / 2U,
-#else
   .X0 = 0U,
-#endif
   .Y0 = 0U,
   .XSize = 0U,
   .YSize = 0U,

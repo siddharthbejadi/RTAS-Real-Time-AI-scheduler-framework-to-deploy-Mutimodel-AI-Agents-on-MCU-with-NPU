@@ -33,42 +33,19 @@ extern int32_t cameraFrameReceived;
 
 static void DCMIPP_PipeInitDisplay(CMW_CameraInit_t *camConf, uint32_t *bg_width, uint32_t *bg_height)
 {
-  CMW_Aspect_Ratio_Mode_t aspect_ratio;
   CMW_DCMIPP_Conf_t dcmipp_conf = {0};
   int ret;
 
-  if (ASPECT_RATIO_MODE == ASPECT_RATIO_CROP)
-  {
-    aspect_ratio = CMW_Aspect_ratio_crop;
-  }
-  else if (ASPECT_RATIO_MODE == ASPECT_RATIO_FIT)
-  {
-    aspect_ratio = CMW_Aspect_ratio_fit;
-  }
-  else if (ASPECT_RATIO_MODE == ASPECT_RATIO_FULLSCREEN)
-  {
-    aspect_ratio = CMW_Aspect_ratio_fullscreen;
-  }
+  (void)camConf;
 
-  int lcd_bg_width;
-  int lcd_bg_height;
+  *bg_width = SCREEN_WIDTH;
+  *bg_height = SCREEN_HEIGHT;
 
-  lcd_bg_height = (camConf->height <= SCREEN_HEIGHT) ? camConf->height : SCREEN_HEIGHT;
-
-#if ASPECT_RATIO_MODE == ASPECT_RATIO_FULLSCREEN
-  lcd_bg_width = (((camConf->width*lcd_bg_height)/camConf->height) - ((camConf->width*lcd_bg_height)/camConf->height) % 16);
-#else
-  lcd_bg_width = (camConf->height <= SCREEN_HEIGHT) ? camConf->height : SCREEN_HEIGHT;
-#endif
-
-  *bg_width = lcd_bg_width;
-  *bg_height = lcd_bg_height;
-
-  dcmipp_conf.output_width = lcd_bg_width;
-  dcmipp_conf.output_height = lcd_bg_height;
+  dcmipp_conf.output_width = SCREEN_WIDTH;
+  dcmipp_conf.output_height = SCREEN_HEIGHT;
   dcmipp_conf.output_format = DCMIPP_PIXEL_PACKER_FORMAT_RGB565_1;
   dcmipp_conf.output_bpp = 2;
-  dcmipp_conf.mode = aspect_ratio;
+  dcmipp_conf.mode = CMW_Aspect_ratio_fit;
   dcmipp_conf.enable_gamma_conversion = 0;
   uint32_t pitch;
   ret = CMW_CAMERA_SetPipeConfig(DCMIPP_PIPE1, &dcmipp_conf, &pitch);
