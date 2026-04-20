@@ -426,8 +426,10 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
     /* Bottom toolbar — corrected for 800x480 landscape */
     const TIM_ChatState_t *chat = TIM_AppGetState();
     Panel(20U, 20U, 450U, 392U, chat_bg, 0xFF2FA8CCU);
-    DrawText(36U, 36U, (uint8_t*)"TIM CHAT",
+    DrawText(36U, 36U, (uint8_t*)"Ask TIM",
              LEFT_MODE, &Font16, 0xFF8DEBFFU, chat_bg);
+    DrawText(198U, 38U, (uint8_t*)"Secure workspace active",
+             LEFT_MODE, &Font12, 0xFF00FF88U, chat_bg);
 
     if ((chat != NULL) && (chat->turn_count > TIM_CHAT_HISTORY_COUNT))
     {
@@ -438,7 +440,7 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
                  LEFT_MODE, &Font12, 0xFF8090A0U, chat_bg);
     }
 
-    uint32_t y = 68U;
+    uint32_t y = 66U;
     uint8_t drew_turn = 0U;
 
     if (chat != NULL)
@@ -456,41 +458,41 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
             char meta_line[96];
             char response_line[96];
 
-            snprintf(user_line, sizeof(user_line), "You  %.64s", turn->input);
-            snprintf(meta_line, sizeof(meta_line), "%s  %.0f%%",
+            snprintf(user_line, sizeof(user_line), "%.64s", turn->input);
+            snprintf(meta_line, sizeof(meta_line), "TIM  %s %.0f%%",
                      TIM_IntentName(turn->intent_id),
                      (double)(turn->confidence * 100.0f));
-            snprintf(response_line, sizeof(response_line), "TIM  %.64s", turn->response);
+            snprintf(response_line, sizeof(response_line), "%.64s", turn->response);
 
-            Panel(36U, y, 398U, 30U, 0xFF182028U, 0xFF405060U);
-            DrawText(50U, y + 9U, (uint8_t*)user_line,
+            DrawText(398U, y, (uint8_t*)"You",
+                     LEFT_MODE, &Font12, 0xFF8DEBFFU, chat_bg);
+            Panel(126U, y + 16U, 308U, 30U, 0xFF182028U, 0xFF405060U);
+            DrawText(140U, y + 25U, (uint8_t*)user_line,
                      LEFT_MODE, &Font12, 0xFFFFFFFFU, 0xFF182028U);
-            y += 36U;
 
-            Panel(70U, y, 364U, 42U, 0xFF102820U, 0xFF207050U);
-            DrawText(84U, y + 7U, (uint8_t*)response_line,
+            DrawText(36U, y + 50U, (uint8_t*)meta_line,
+                     LEFT_MODE, &Font12, 0xFF00FF88U, chat_bg);
+            Panel(36U, y + 66U, 350U, 30U, 0xFF102820U, 0xFF207050U);
+            DrawText(50U, y + 75U, (uint8_t*)response_line,
                      LEFT_MODE, &Font12, 0xFFB8E8FFU, 0xFF102820U);
-            DrawText(84U, y + 25U, (uint8_t*)meta_line,
-                     LEFT_MODE, &Font12, 0xFF00FF88U, 0xFF102820U);
-            y += 50U;
+            y += 98U;
             drew_turn = 1U;
         }
     }
 
     if (drew_turn == 0U)
     {
-        DrawText(36U, 112U, (uint8_t*)"Ask TIM from the serial console.",
-                 LEFT_MODE, &Font16, 0xFFB8E8FFU, chat_bg);
-        DrawText(36U, 148U, (uint8_t*)"Try: help, battery status, what do you see",
-                 LEFT_MODE, &Font12, 0xFF8090A0U, chat_bg);
-    }
+        Panel(36U, 108U, 350U, 44U, 0xFF102820U, 0xFF207050U);
+        DrawText(50U, 122U, (uint8_t*)"Tap below and type a message.",
+                 LEFT_MODE, &Font12, 0xFFB8E8FFU, 0xFF102820U);
+     }
 
-    Panel(36U, 358U, 398U, 38U, 0xFF0B1118U, 0xFF405060U);
+    Panel(32U, 354U, 406U, 44U, 0xFF0B1118U, 0xFF405060U);
     char input_line[112];
     const char *typed = ((chat != NULL) && (chat->current_input[0] != '\0')) ?
-                        chat->current_input : "Type on UART...";
+                        chat->current_input : "Hey VIP! Type Here ^_^";
     snprintf(input_line, sizeof(input_line), "> %.82s", typed);
-    DrawText(50U, 370U, (uint8_t*)input_line,
+    DrawText(48U, 370U, (uint8_t*)input_line,
              LEFT_MODE, &Font12,
              ((chat != NULL) && (chat->current_input[0] != '\0')) ? 0xFFFFFFFFU : 0xFF8090A0U,
              0xFF0B1118U);

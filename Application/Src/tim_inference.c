@@ -209,7 +209,7 @@ const char *TIM_ResponseForIntent(int32_t intent_id)
     switch (intent_id)
     {
     case TIM_INTENT_GREETING:
-        return "Hello. Secure workspace is active.";
+        return "Hello.";
     case TIM_INTENT_STATUS:
         return "I am running normally.";
     case TIM_INTENT_THANKS:

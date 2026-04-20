@@ -78,7 +78,7 @@ void TIM_AppInit(void)
     if (TIM_Inference_Init() == 0)
     {
         s_chat.ready = 1U;
-        strncpy(s_chat.response, "Type on UART and press Enter.", sizeof(s_chat.response) - 1U);
+        strncpy(s_chat.response, "Hey VIP! 🤖 (◕‿‿◕｡).", sizeof(s_chat.response) - 1U);
         printf("[TIM] ready. Type a message and press Enter.\r\n");
     }
     else

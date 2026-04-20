@@ -54,7 +54,7 @@
  *   LOGOUT      : drawn at x=660                    → hit x=560..800
  */
 static const ButtonMap_t s_main_map[] = {
-    {  36U, 358U, 398U, 38U, TOUCH_BTN_CHAT_INPUT },
+    {  32U, 354U, 406U, 44U, TOUCH_BTN_CHAT_INPUT },
     {   0U, 430U, 266U, 50U, TOUCH_BTN_ADD_PERSON },
     { 267U, 430U, 266U, 50U, TOUCH_BTN_SETTINGS   },
     { 534U, 430U, 266U, 50U, TOUCH_BTN_LOGOUT     },
