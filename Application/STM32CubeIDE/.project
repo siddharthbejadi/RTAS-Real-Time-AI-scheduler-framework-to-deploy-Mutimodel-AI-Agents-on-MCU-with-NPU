@@ -77,6 +77,21 @@
 			<locationURI>PARENT-1-PROJECT_LOC/Src/app_ui.c</locationURI>
 		</link>
 		<link>
+			<name>Application/tim_app.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Src/tim_app.c</locationURI>
+		</link>
+		<link>
+			<name>Application/tim_inference.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Src/tim_inference.c</locationURI>
+		</link>
+		<link>
+			<name>Application/tim_tokenizer.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Src/tim_tokenizer.c</locationURI>
+		</link>
+		<link>
 			<name>Application/crop_img.c</name>
 			<type>1</type>
 			<locationURI>PARENT-1-PROJECT_LOC/Src/crop_img.c</locationURI>

@@ -5,6 +5,8 @@
 #include "stm32n6xx_hal.h"
 #include "face_store.h"
 #include "face_recog.h"
+#include "tim_app.h"
+#include "tim_inference.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -334,6 +336,7 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
 {
     const uint32_t screen_bg = 0x00000000U;
     const uint32_t panel_bg = 0xDD0A0A12U;
+    const uint32_t chat_bg = 0xEE101820U;
     uint32_t nb = pp->nb_detect;
     od_pp_outBuffer_t *r = pp->pOutBuff;
 
@@ -390,15 +393,6 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
 
     char namebuf[48];
     snprintf(namebuf, sizeof(namebuf), "Welcome: %s", who);
-    DrawText(30U, 40U, (uint8_t*)"MAIN ACCESS PANEL",
-             LEFT_MODE, &Font20, 0xFF00FFFFU, panel_bg);
-
-    DrawText(30U, 82U, (uint8_t*)"Access granted.",
-             LEFT_MODE, &Font20, 0xFF00FF88U, panel_bg);
-
-    DrawText(30U, 122U, (uint8_t*)namebuf,
-             LEFT_MODE, &Font20, name_col, panel_bg);
-
     if ((r != NULL) && (nb > 0U))
     {
         snprintf(line2, sizeof(line2), "det %.0f%% / match %.0f%%",
@@ -409,11 +403,98 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
         snprintf(line2, sizeof(line2), "Camera active / session unlocked");
     }
 
-    DrawText(30U, 162U, (uint8_t*)line2,
-             LEFT_MODE, &Font16, 0xFFFFFFFFU, panel_bg);
+    uint32_t status_y = cam_y + cam_h + 14U;
+    uint32_t status_h = 152U;
+    if ((status_y + status_h) > 432U)
+    {
+        status_h = (432U > status_y) ? (432U - status_y) : 0U;
+    }
+    if (status_h >= 112U)
+    {
+        Panel(cam_x, status_y, cam_w, status_h, panel_bg, 0xFF00FFFFU);
+        DrawText(cam_x + 12U, status_y + 14U, (uint8_t*)"MAIN ACCESS PANEL",
+                 LEFT_MODE, &Font16, 0xFF00FFFFU, panel_bg);
+        DrawText(cam_x + 12U, status_y + 42U, (uint8_t*)"Access granted.",
+                 LEFT_MODE, &Font16, 0xFF00FF88U, panel_bg);
+        DrawText(cam_x + 12U, status_y + 70U, (uint8_t*)namebuf,
+                 LEFT_MODE, &Font16, name_col, panel_bg);
+        DrawText(cam_x + 12U, status_y + 100U, (uint8_t*)line2,
+                 LEFT_MODE, &Font12, 0xFFFFFFFFU, panel_bg);
+    }
 
 
     /* Bottom toolbar — corrected for 800x480 landscape */
+    const TIM_ChatState_t *chat = TIM_AppGetState();
+    Panel(20U, 20U, 450U, 392U, chat_bg, 0xFF2FA8CCU);
+    DrawText(36U, 36U, (uint8_t*)"TIM CHAT",
+             LEFT_MODE, &Font16, 0xFF8DEBFFU, chat_bg);
+
+    if ((chat != NULL) && (chat->turn_count > TIM_CHAT_HISTORY_COUNT))
+    {
+        char scroll_line[32];
+        snprintf(scroll_line, sizeof(scroll_line), "%lu older",
+                 (unsigned long)(chat->turn_count - TIM_CHAT_HISTORY_COUNT));
+        DrawText(390U, 38U, (uint8_t*)scroll_line,
+                 LEFT_MODE, &Font12, 0xFF8090A0U, chat_bg);
+    }
+
+    uint32_t y = 68U;
+    uint8_t drew_turn = 0U;
+
+    if (chat != NULL)
+    {
+        uint32_t first_turn = (chat->turn_count > 3U) ? 1U : 0U;
+        for (uint32_t i = first_turn; i < TIM_CHAT_HISTORY_COUNT; i++)
+        {
+            const TIM_ChatTurn_t *turn = &chat->history[i];
+            if (turn->valid == 0U)
+            {
+                continue;
+            }
+
+            char user_line[96];
+            char meta_line[96];
+            char response_line[96];
+
+            snprintf(user_line, sizeof(user_line), "You  %.64s", turn->input);
+            snprintf(meta_line, sizeof(meta_line), "%s  %.0f%%",
+                     TIM_IntentName(turn->intent_id),
+                     (double)(turn->confidence * 100.0f));
+            snprintf(response_line, sizeof(response_line), "TIM  %.64s", turn->response);
+
+            Panel(36U, y, 398U, 30U, 0xFF182028U, 0xFF405060U);
+            DrawText(50U, y + 9U, (uint8_t*)user_line,
+                     LEFT_MODE, &Font12, 0xFFFFFFFFU, 0xFF182028U);
+            y += 36U;
+
+            Panel(70U, y, 364U, 42U, 0xFF102820U, 0xFF207050U);
+            DrawText(84U, y + 7U, (uint8_t*)response_line,
+                     LEFT_MODE, &Font12, 0xFFB8E8FFU, 0xFF102820U);
+            DrawText(84U, y + 25U, (uint8_t*)meta_line,
+                     LEFT_MODE, &Font12, 0xFF00FF88U, 0xFF102820U);
+            y += 50U;
+            drew_turn = 1U;
+        }
+    }
+
+    if (drew_turn == 0U)
+    {
+        DrawText(36U, 112U, (uint8_t*)"Ask TIM from the serial console.",
+                 LEFT_MODE, &Font16, 0xFFB8E8FFU, chat_bg);
+        DrawText(36U, 148U, (uint8_t*)"Try: help, battery status, what do you see",
+                 LEFT_MODE, &Font12, 0xFF8090A0U, chat_bg);
+    }
+
+    Panel(36U, 358U, 398U, 38U, 0xFF0B1118U, 0xFF405060U);
+    char input_line[112];
+    const char *typed = ((chat != NULL) && (chat->current_input[0] != '\0')) ?
+                        chat->current_input : "Type on UART...";
+    snprintf(input_line, sizeof(input_line), "> %.82s", typed);
+    DrawText(50U, 370U, (uint8_t*)input_line,
+             LEFT_MODE, &Font12,
+             ((chat != NULL) && (chat->current_input[0] != '\0')) ? 0xFFFFFFFFU : 0xFF8090A0U,
+             0xFF0B1118U);
+
     Panel(0U, 440U, 800U, 40U, 0xEE111111U, 0xFF00FFFFU);
 
     DrawText(20U, 452U, (uint8_t*)"+ ADD",
@@ -699,6 +780,47 @@ static void DrawEnrollName(void)
     }
 }
 
+static void DrawChatKeyboard(void)
+{
+    const TIM_ChatState_t *chat = TIM_AppGetState();
+    const char *typed = ((chat != NULL) && (chat->current_input[0] != '\0')) ?
+                        chat->current_input : "tap letters below";
+    const uint32_t bg = 0xEE0A0A12U;
+
+    Panel(60U, 66U, 680U, 368U, bg, 0xFF00FFFFU);
+    DrawText(0U, 86U, (uint8_t*)"TIM chat input",
+             CENTER_MODE, &Font24, 0xFF00FFFFU, bg);
+
+    Panel(120U, 116U, 560U, 34U, 0xFF101820U, 0xFF00FFFFU);
+    DrawText(136U, 126U, (uint8_t*)typed,
+             LEFT_MODE, &Font16, 0xFFFFFFFFU, 0xFF101820U);
+
+    const char *keys1 = "ABCDEFGHIJKL";
+    const char *keys2 = "MNOPQRSTUVWX";
+    char label[2] = {0};
+
+    for (uint32_t i = 0U; i < 12U; i++)
+    {
+        label[0] = keys1[i];
+        DrawNameKey(80U + (i * 55U), 160U, 50U, label);
+        label[0] = keys2[i];
+        DrawNameKey(80U + (i * 55U), 205U, 50U, label);
+    }
+
+    DrawNameKey(245U, 250U, 50U, "Y");
+    DrawNameKey(300U, 250U, 50U, "Z");
+    DrawNameKey(355U, 250U, 105U, "SPACE");
+    DrawNameKey(465U, 250U, 105U, "DEL");
+
+    Panel(190U, 370U, 180U, 48U, 0xFF301010U, 0xFFFF4444U);
+    DrawText(248U, 385U, (uint8_t*)"CANCEL",
+             LEFT_MODE, &Font16, 0xFFFFAAAAU, 0xFF301010U);
+
+    Panel(430U, 370U, 180U, 48U, 0xFF103020U, 0xFF00FF88U);
+    DrawText(498U, 385U, (uint8_t*)"SEND",
+             LEFT_MODE, &Font16, 0xFF00FF88U, 0xFF103020U);
+}
+
 static void DrawPerfOverlay(void)
 {
     char perf[64];
@@ -733,6 +855,11 @@ static void DrawPerfOverlay(void)
         text_col = 0xFFB0FFE8U;
     }
     else if (app_state == APP_STATE_ENROLL_NAME)
+    {
+        back_col = 0xEE0A0A12U;
+        text_col = 0xFFB0FFE8U;
+    }
+    else if (app_state == APP_STATE_CHAT_KEYBOARD)
     {
         back_col = 0xEE0A0A12U;
         text_col = 0xFFB0FFE8U;
@@ -825,7 +952,12 @@ AppState_t UI_UpdateState(od_pp_out_t *pp, uint32_t touch_btn)
             multi_person_ts = 0U;
         }
 
-        if (btn || touch_btn == _TB_SETTINGS)
+        if (touch_btn == TOUCH_BTN_CHAT_INPUT)
+        {
+            app_state = APP_STATE_CHAT_KEYBOARD;
+            state_entry_time = now;
+        }
+        else if (btn || touch_btn == _TB_SETTINGS)
         {
             app_state = APP_STATE_SETTINGS;
             state_entry_time = now;
@@ -961,6 +1093,32 @@ AppState_t UI_UpdateState(od_pp_out_t *pp, uint32_t touch_btn)
         }
         break;
 
+    case APP_STATE_CHAT_KEYBOARD:
+        if ((touch_btn >= TOUCH_BTN_NAME_A) && (touch_btn <= TOUCH_BTN_NAME_Z))
+        {
+            TIM_AppInputChar((char)('a' + (touch_btn - TOUCH_BTN_NAME_A)));
+        }
+        else if (touch_btn == TOUCH_BTN_NAME_BACKSPACE)
+        {
+            TIM_AppBackspace();
+        }
+        else if (touch_btn == TOUCH_BTN_NAME_SPACE)
+        {
+            TIM_AppInputChar(' ');
+        }
+        else if (touch_btn == TOUCH_BTN_NAME_OK)
+        {
+            TIM_AppSubmitCurrentInput();
+            app_state = APP_STATE_MAIN;
+            state_entry_time = now;
+        }
+        else if ((touch_btn == TOUCH_BTN_NAME_CANCEL) || btn)
+        {
+            app_state = APP_STATE_MAIN;
+            state_entry_time = now;
+        }
+        break;
+
     default:
         break;
     }
@@ -990,6 +1148,11 @@ void UI_Render(od_pp_out_t *pp, UI_BgArea_t *bg)
 
     case APP_STATE_MAIN:
         DrawMain(pp, bg);
+        break;
+
+    case APP_STATE_CHAT_KEYBOARD:
+        DrawMain(pp, bg);
+        DrawChatKeyboard();
         break;
 
     case APP_STATE_BACKING_OFF:

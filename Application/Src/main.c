@@ -52,6 +52,7 @@
 #include "app_ui.h"
 #include "app_touch.h"
 #include "app_buzzer.h"
+#include "tim_app.h"
 
 /*
  * Keep these includes aligned with the modules you actually have in the project.
@@ -330,6 +331,7 @@ int main(void)
   /* ---------------- Face recognition init ---------------- */
   FaceStore_Init();
   FaceRecog_Init();
+  TIM_AppInit();
 
   /* ---------------- Camera init ---------------- */
   CameraPipeline_Init(&lcd_bg_area.XSize, &lcd_bg_area.YSize, &pitch_nn);
@@ -348,6 +350,7 @@ int main(void)
   /* ---------------- Main loop ---------------- */
   while (1)
   {
+    TIM_AppPoll();
     CameraPipeline_IspUpdate();
 
     /* Snapshot into uint8 staging buffer */
@@ -839,7 +842,7 @@ static void Display_NetworkOutput(od_pp_out_t *p_postprocess, uint32_t inference
 
   if (app_state != prev_state)
   {
-    if (app_state == APP_STATE_MAIN)
+    if ((app_state == APP_STATE_MAIN) || (app_state == APP_STATE_CHAT_KEYBOARD))
     {
       Display_SetLayout(DISPLAY_LAYOUT_MAIN_PREVIEW);
     }
@@ -876,7 +879,7 @@ static void Display_NetworkOutput(od_pp_out_t *p_postprocess, uint32_t inference
    * If your UI_Render signature differs, adapt here.
    */
   (void)inference_ms;
-  if (app_state == APP_STATE_MAIN)
+  if ((app_state == APP_STATE_MAIN) || (app_state == APP_STATE_CHAT_KEYBOARD))
   {
     Display_UpdateMainPreview();
   }

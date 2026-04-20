@@ -116,6 +116,7 @@ typedef enum {
     APP_STATE_BACKING_OFF = 4,  /* ≥ UI_BACKOFF_COUNT detections            */
     APP_STATE_SETTINGS    = 5,  /* manage authorized persons                */
     APP_STATE_ENROLL_NAME = 6,  /* choose display name before enrolment     */
+    APP_STATE_CHAT_KEYBOARD = 7, /* on-screen TIM chat keypad                */
 } AppState_t;
 
 /* ─────────────────────────────────────────────────────────────────────────── */
