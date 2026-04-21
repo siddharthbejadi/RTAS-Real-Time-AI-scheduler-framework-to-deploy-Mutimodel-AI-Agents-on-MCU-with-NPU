@@ -31,6 +31,8 @@ typedef struct {
 } TIM_ChatState_t;
 
 void TIM_AppInit(void);
+void TIM_AppSetUser(int32_t user_idx);
+void TIM_AppClearUser(void);
 void TIM_AppPoll(void);
 const TIM_ChatState_t *TIM_AppGetState(void);
 void TIM_AppSubmitText(const char *text);

@@ -49,6 +49,7 @@ static int32_t pending_rename_idx = -1;
 static int32_t pending_delete_idx = -1;
 static uint8_t pending_admin_value = 0U;
 static uint32_t settings_denied_ts = 0U;
+static uint32_t tim_handled_turn_count = 0U;
 
 /* ───────────────────────────────────────────── */
 /* COLORS                                       */
@@ -78,6 +79,49 @@ static inline uint8_t ButtonPressed(void)
     uint8_t pressed = (now && !prev_btn);
     prev_btn = now;
     return pressed;
+}
+
+static void DrawDetectionBoxes(const od_pp_outBuffer_t *boxes,
+                               uint32_t count,
+                               uint32_t area_x,
+                               uint32_t area_y,
+                               uint32_t area_w,
+                               uint32_t area_h)
+{
+    if ((boxes == NULL) || (count == 0U) || (area_w == 0U) || (area_h == 0U))
+    {
+        return;
+    }
+
+    for (uint32_t i = 0U; i < count; i++)
+    {
+        float left = (boxes[i].x_center - (boxes[i].width * 0.5f)) * (float)area_w;
+        float top = (boxes[i].y_center - (boxes[i].height * 0.5f)) * (float)area_h;
+        float right = left + (boxes[i].width * (float)area_w);
+        float bottom = top + (boxes[i].height * (float)area_h);
+
+        if (left < 0.0f) left = 0.0f;
+        if (top < 0.0f) top = 0.0f;
+        if (right > (float)area_w) right = (float)area_w;
+        if (bottom > (float)area_h) bottom = (float)area_h;
+
+        if ((right <= left) || (bottom <= top))
+        {
+            continue;
+        }
+
+        uint32_t x = area_x + (uint32_t)left;
+        uint32_t y = area_y + (uint32_t)top;
+        uint32_t w = (uint32_t)(right - left);
+        uint32_t h = (uint32_t)(bottom - top);
+        uint32_t col = bbox_colors[i % 6U];
+
+        UTIL_LCD_DrawRect(x, y, w, h, col);
+        if ((w > 4U) && (h > 4U))
+        {
+            UTIL_LCD_DrawRect(x + 1U, y + 1U, w - 2U, h - 2U, col);
+        }
+    }
 }
 
 static void ResetPendingEnrollName(void)
@@ -127,6 +171,133 @@ static uint8_t SessionIsAdmin(void)
            FaceStore_IsAdmin((uint32_t)session_user_idx);
 }
 
+static int32_t FirstDeletableUserIndex(void)
+{
+    int32_t found = -1;
+
+    for (uint32_t i = 0U; i < FACE_STORE_MAX_RECORDS; i++)
+    {
+        const FaceStore_Record_t *rec = FaceStore_Get(i);
+        if ((rec == NULL) || (rec->active == 0U) || FaceStore_IsAdmin(i))
+        {
+            continue;
+        }
+
+        if (found >= 0)
+        {
+            return -1;
+        }
+        found = (int32_t)i;
+    }
+
+    return found;
+}
+
+static void LockSession(uint32_t now)
+{
+    session_active = 0U;
+    session_user_idx = -1;
+    TIM_AppClearUser();
+    tim_handled_turn_count = TIM_AppGetState()->turn_count;
+    idle_ts = 0U;
+    multi_person_ts = 0U;
+    app_state = APP_STATE_AUTH;
+    state_entry_time = now;
+}
+
+static void StartSession(int32_t user_idx)
+{
+    session_user_idx = user_idx;
+    session_active = 1U;
+    TIM_AppSetUser(user_idx);
+    tim_handled_turn_count = TIM_AppGetState()->turn_count;
+}
+
+static void ExecuteTimIntent(const TIM_ChatTurn_t *turn, uint32_t now)
+{
+    if ((turn == NULL) || (turn->valid == 0U) || (turn->confidence < 0.70f))
+    {
+        return;
+    }
+
+    switch ((TimIntent_t)turn->intent_id)
+    {
+    case TIM_INTENT_HELP:
+    case TIM_INTENT_SYSTEM_STATUS:
+    case TIM_INTENT_SHOW_RUNTIME:
+    case TIM_INTENT_LIST_USERS:
+        app_state = APP_STATE_SETTINGS;
+        state_entry_time = now;
+        break;
+
+    case TIM_INTENT_LOCK:
+    case TIM_INTENT_LOGOUT:
+        LockSession(now);
+        break;
+
+    case TIM_INTENT_UNLOCK:
+        if ((last_recog_idx >= 0) && (FaceStore_Get((uint32_t)last_recog_idx) != NULL))
+        {
+            StartSession(last_recog_idx);
+            app_state = APP_STATE_MAIN;
+            state_entry_time = now;
+        }
+        else
+        {
+            app_state = APP_STATE_AUTH;
+            state_entry_time = now;
+        }
+        break;
+
+    case TIM_INTENT_ENROLL_FACE:
+        if (session_active && (turn->confidence >= 0.80f))
+        {
+            pending_rename_idx = -1;
+            ResetPendingEnrollName();
+            app_state = APP_STATE_ENROLL_NAME;
+            state_entry_time = now;
+        }
+        break;
+
+    case TIM_INTENT_DELETE_USER:
+        if (SessionIsAdmin() && (turn->confidence >= 0.85f))
+        {
+            pending_delete_idx = FirstDeletableUserIndex();
+            app_state = APP_STATE_SETTINGS;
+            state_entry_time = now;
+        }
+        break;
+
+    case TIM_INTENT_RESET_SYSTEM:
+        if (SessionIsAdmin() && (turn->confidence >= 0.90f))
+        {
+            NVIC_SystemReset();
+        }
+        break;
+
+    case TIM_INTENT_VISION_QUERY:
+        app_state = session_active ? APP_STATE_MAIN : APP_STATE_AUTH;
+        state_entry_time = now;
+        break;
+
+    default:
+        break;
+    }
+}
+
+static void ProcessTimTriggers(uint32_t now)
+{
+    const TIM_ChatState_t *chat = TIM_AppGetState();
+    if ((chat == NULL) || (chat->turn_count == tim_handled_turn_count))
+    {
+        return;
+    }
+
+    const TIM_ChatTurn_t *turn = &chat->history[TIM_CHAT_HISTORY_COUNT - 1U];
+    tim_handled_turn_count = chat->turn_count;
+    ExecuteTimIntent(turn, now);
+}
+
 /* ───────────────────────────────────────────── */
 /* INIT                                         */
 /* ───────────────────────────────────────────── */
@@ -139,6 +310,7 @@ void UI_Init(void)
     idle_ts = 0U;
     backoff_ts = 0U;
     multi_person_ts = 0U;
+    tim_handled_turn_count = 0U;
     /* Init USER1 button as simple GPIO input (avoids pulling in EXTI HAL) */
     BUTTON_USER1_GPIO_CLK_ENABLE();
     GPIO_InitTypeDef gpio = {0};
@@ -248,8 +420,15 @@ static void DrawAuth(od_pp_out_t *pp)
 
     UTIL_LCD_FillRect(0U, 0U, UI_SCREEN_W, UI_SCREEN_H, bg);
 
-    /* Guide box */
-    UTIL_LCD_DrawRect(270U, 100U, 260U, 260U, 0xFF00FFFFU);
+    if ((r != NULL) && (nb > 0U))
+    {
+        DrawDetectionBoxes(r, nb, 0U, 0U, UI_SCREEN_W, UI_SCREEN_H);
+    }
+    else
+    {
+        /* Guide box while no face has been detected yet. */
+        UTIL_LCD_DrawRect(270U, 100U, 260U, 260U, 0xFF00FFFFU);
+    }
 
     DrawText(0U, 40U, (uint8_t*)"FACE AUTHENTICATION",
              CENTER_MODE, &Font20, 0xFF00FFFFU, bg);
@@ -343,10 +522,10 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
     UTIL_LCD_FillRect(0U, 0U, UI_SCREEN_W, UI_SCREEN_H, screen_bg);
 
     /* Camera PiP window — tuned for 800x480 landscape */
-    Panel(0U, 0U, 490U, 430U, panel_bg, 0xFF00FFFFU);
+    Panel(0U, 0U, 534U, 432U, panel_bg, 0xFF00FFFFU);
 
-    uint32_t cam_x = 544U;
-    uint32_t cam_y = 0U;
+    uint32_t cam_x = 520U;
+    uint32_t cam_y = 16U;
     uint32_t cam_w = 256U;
     uint32_t cam_h = 212U;
 
@@ -361,22 +540,7 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
 
     UTIL_LCD_DrawRect(cam_x - 2U, cam_y - 2U, cam_w + 4U, cam_h + 4U, 0xFF00FFFFU);
 
-    if ((r != NULL) && (nb > 0U))
-    {
-        float sx = (float)cam_w;
-        float sy = (float)cam_h;
-
-        for (uint32_t i = 0U; i < nb; i++)
-        {
-            uint32_t col = bbox_colors[i % 6U];
-            uint32_t x = (uint32_t)((r[i].x_center - r[i].width * 0.5f) * sx) + cam_x;
-            uint32_t y = (uint32_t)((r[i].y_center - r[i].height * 0.5f) * sy) + cam_y;
-            uint32_t w = (uint32_t)(r[i].width * sx);
-            uint32_t h = (uint32_t)(r[i].height * sy);
-
-            UTIL_LCD_DrawRect(x, y, w, h, col);
-        }
-    }
+    DrawDetectionBoxes(r, nb, cam_x, cam_y, cam_w, cam_h);
 
     const char *who = "User";
     uint32_t name_col = 0xFF00FF88U;
@@ -404,11 +568,7 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
     }
 
     uint32_t status_y = cam_y + cam_h + 14U;
-    uint32_t status_h = 152U;
-    if ((status_y + status_h) > 432U)
-    {
-        status_h = (432U > status_y) ? (432U - status_y) : 0U;
-    }
+    uint32_t status_h = (432U > status_y) ? (432U - status_y) : 0U;
     if (status_h >= 112U)
     {
         Panel(cam_x, status_y, cam_w, status_h, panel_bg, 0xFF00FFFFU);
@@ -425,7 +585,7 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
 
     /* Bottom toolbar — corrected for 800x480 landscape */
     const TIM_ChatState_t *chat = TIM_AppGetState();
-    Panel(20U, 20U, 450U, 392U, chat_bg, 0xFF2FA8CCU);
+    Panel(10U, 20U, 514U, 402U, chat_bg, 0xFF2FA8CCU);
     DrawText(36U, 36U, (uint8_t*)"Ask TIM",
              LEFT_MODE, &Font16, 0xFF8DEBFFU, chat_bg);
     DrawText(198U, 38U, (uint8_t*)"Secure workspace active",
@@ -482,17 +642,17 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
 
     if (drew_turn == 0U)
     {
-        Panel(36U, 108U, 350U, 44U, 0xFF102820U, 0xFF207050U);
-        DrawText(50U, 122U, (uint8_t*)"Tap below and type a message.",
+        Panel(36U, 95U, 350U, 44U, 0xFF102820U, 0xFF207050U);
+        DrawText(50U, 109U, (uint8_t*)"Tap below and type a message.",
                  LEFT_MODE, &Font12, 0xFFB8E8FFU, 0xFF102820U);
      }
 
-    Panel(32U, 354U, 406U, 44U, 0xFF0B1118U, 0xFF405060U);
+    Panel(32U, 364U, 406U, 44U, 0xFF0B1118U, 0xFF405060U);
     char input_line[112];
     const char *typed = ((chat != NULL) && (chat->current_input[0] != '\0')) ?
                         chat->current_input : "Hey VIP! Type Here ^_^";
     snprintf(input_line, sizeof(input_line), "> %.82s", typed);
-    DrawText(48U, 370U, (uint8_t*)input_line,
+    DrawText(48U, 382U, (uint8_t*)input_line,
              LEFT_MODE, &Font12,
              ((chat != NULL) && (chat->current_input[0] != '\0')) ? 0xFFFFFFFFU : 0xFF8090A0U,
              0xFF0B1118U);
@@ -892,6 +1052,8 @@ AppState_t UI_UpdateState(od_pp_out_t *pp, uint32_t touch_btn)
     uint32_t nb = (uint32_t)pp->nb_detect;
     uint8_t btn = ButtonPressed();
 
+    ProcessTimTriggers(now);
+
     switch (app_state)
     {
     case APP_STATE_SPLASH:
@@ -908,8 +1070,7 @@ AppState_t UI_UpdateState(od_pp_out_t *pp, uint32_t touch_btn)
             const FaceStore_Record_t *rec = FaceStore_Get((uint32_t)last_recog_idx);
             if (rec != NULL)
             {
-                session_user_idx = last_recog_idx;
-                session_active = 1U;
+                StartSession(last_recog_idx);
                 multi_person_ts = 0U;
 
                 app_state = APP_STATE_AUTH_SUCCESS;
@@ -939,13 +1100,7 @@ AppState_t UI_UpdateState(od_pp_out_t *pp, uint32_t touch_btn)
             }
             else if ((now - multi_person_ts) >= 5000U)
             {
-                session_active = 0U;
-                session_user_idx = -1;
-                idle_ts = 0U;
-                multi_person_ts = 0U;
-
-                app_state = APP_STATE_AUTH;
-                state_entry_time = now;
+                LockSession(now);
                 break;
             }
         }
@@ -966,13 +1121,7 @@ AppState_t UI_UpdateState(od_pp_out_t *pp, uint32_t touch_btn)
         }
         else if (touch_btn == _TB_LOGOUT)
         {
-            session_active = 0U;
-            session_user_idx = -1;
-            idle_ts = 0U;
-            multi_person_ts = 0U;
-
-            app_state = APP_STATE_AUTH;
-            state_entry_time = now;
+            LockSession(now);
         }
         else if (touch_btn == _TB_ADD_PERSON)
         {

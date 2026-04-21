@@ -1,0 +1,573 @@
+--- PAGE 1 ---
+Intelligent Edge Application Deployment for NPU: A Comparative
+Framework Across CNN, LLM, and VLA Architectures on
+Embedded Hardware
+Siddharth Bejadi
+School of Computing and Information Science
+ARU Cambridge, United Kingdom
+Abstract—Deploying AI models on edge neural processing
+units (NPUs) demands training strategies for hardware con-
+straints, but we have no framework or techniques to develop
+an IEA (Intelligent Edge Application). This paper proposes
+a systematic framework classifying training approaches for
+edge NPU deployment into three levels: software-only (post-
+training quantization), hybrid (quantization-aware training and
+knowledge distillation) and hardware-aware (hardware-aware
+neural architecture search and compiler-in-the-loop co-design).
+I have analyzed the feasibility and trade-offs of each approach
+across three architecture families—convolutional neural networks
+(CNNs), large language models (LLMs), and vision-language-
+action (VLA) models—Mapping which model architectures suit
+which deployment approaches, based on current toolchain sup-
+port and published benchmarks. The framework is validated
+through a case study deploying YOLOv8n on the STM32N6570-
+DK development board with the Neural-ART NPU, achieving
+29 ms inference at INT8 post-training quantization and doc-
+umenting how training strategy can directly impact memory
+footprint, inference, deploying debugging effort. My analysis
+reveals that CNNs are well-served by all three training levels,
+LLMs remain largely restricted to software-only approaches
+and impractical on microcontroller-class NPUs due to memory
+bandwidth constraint, and VLAs represent a research frontier
+where only the most aggressive architectural compression enables
+edge feasibility. I conclude with a six-step decision framework and
+identify unsolved challenges toward fully cloud-independent AI
+systems.
+Index Terms—Edge AI, Neural Processing Units, Quantization-
+Aware Training, Post-Training Quantization, Vision-Language-
+Action Models, TinyML, AI on Board
+I. INTRODUCTION
+The deployment of artificial intelligence on edge devices
+has shifted from an aspirational goal to an engineering imper-
+ative. Applications spanning autonomous robotics, industrial
+inspection, wearable health monitoring, and smart infras-
+tructure increasingly demand inference at the point of data
+generation—driven by latency requirements below 100 mil-
+liseconds, privacy constraints that prohibit cloud transmission,
+connectivity limitations in remote or safety-critical environ-
+ments, and energy budgets measured in milliwatts [1], [2].
+This shift has catalysed a proliferation of Neural Processing
+Units (NPUs) embedded within microcontroller-class devices,
+offering dedicated hardware acceleration for deep learning
+inference under strict power and memory constraints [3], [4].
+However, the dominant focus of edge AI research has
+been on inference optimisation—techniques appliedaftera
+model has been trained, such as post-training quantization,
+pruning, and knowledge distillation [5], [6]. Comparatively
+little attention has been paid to how the training process itself
+should be adapted when the deployment target is an edge NPU
+rather than a cloud GPU. This gap is consequential: the choice
+of training strategy has cascading effects on accuracy preser-
+vation, deployment debugging effort, toolchain compatibility,
+and ultimately whether a model can be deployed at all.
+The challenge is compounded by the diversity of model
+architectures now being considered for edge deployment.
+Convolutional neural networks (CNNs) represent the most
+mature edge AI workload, with well-characterised quantiza-
+tion behaviour and comprehensive NPU toolchain support
+[7]. Large language models (LLMs), driven by the emer-
+gence of small language model families such as Phi-3 [8],
+Llama 3.2 [9], and MobileLLM [10], are rapidly moving
+toward on-device deployment but face fundamental memory
+bandwidth bottlenecks on microcontroller-class hardware [11],
+[12]. Vision-language-action (VLA) models, which combine
+visual perception with language understanding and robotic
+control, represent the newest frontier—with SmolVLA at 450
+million parameters [13] and EdgeVLA [14] demonstrating that
+compact VLA architectures can approach the performance
+of models ten times larger, though MCU-class deployment
+remains infeasible.
+Each architecture family constrains the feasible training-to-
+deployment pipeline differently. A training strategy that works
+for deploying YOLOv8 on an STM32N6 NPU may be entirely
+inappropriate for deploying a quantized LLM on a Qualcomm
+Hexagon NPU or a VLA on NVIDIA Jetson. Yet no unified
+framework exists to guide practitioners through this decision
+space.
+This paper addresses this gap with four contributions:
+1) A taxonomy of training approaches for edge NPU
+deployment, classifying strategies into three lev-
+els: software-only post-training quantization, hybrid
+quantization-aware training, and hardware-aware co-
+design.
+2) A comparative analysis across CNN, LLM, and VLA ar-
+chitectures, establishing an architecture-approach com-
+patibility matrix.
+3) Experimental validation through a case study deploying
+YOLOv8n on the STM32N6570-DK with the Neural-
+
+--- PAGE 2 ---
+ART NPU, achieving 29 ms inference.
+4) A practical six-step decision framework enabling practi-
+tioners to select the appropriate training approach given
+their constraints.
+II. BACKGROUND ANDRELATEDWORK
+A. Edge AI Architectures
+Edge AI encompasses the deployment of artificial intelli-
+gence algorithms directly on devices at the network periphery,
+shifting computation from centralised cloud data centres to
+distributed edge nodes with significantly constrained resources
+[1]. Most ultra-low-power edge systems operate below approx-
+imately 200 mW, rising to 1–10 W for MCU-class processors
+with dedicated NPUs [3].
+CNNsrepresent the most mature edge AI workload. The
+YOLO family, MobileNet variants, and EfficientNet-Lite have
+been progressively optimised for edge deployment through
+depthwise separable convolutions, inverted residual blocks,
+and squeeze-and-excitation modules [7]. These architectures
+produce regular compute patterns that map efficiently to NPU
+multiply-accumulate (MAC) arrays. INT8 post-training quan-
+tization on well-designed CNNs typically incurs less than 1%
+accuracy loss on standard benchmarks [15], making them the
+default choice for NPU-targeted perception tasks.
+LLMs at the edgerepresent an emerging but severely
+constrained deployment target. Meta’s Llama 3.2 offers 1B
+and 3B variants optimised for edge devices [9]; Microsoft’s
+Phi-3 achieves performance comparable to much larger models
+through data-centric training [8]; and MobileLLM targets sub-
+billion parameter models through architecture search [10].
+However, even the smallest practical LLMs require hundreds
+of megabytes of weight storage at INT4 quantization—two
+orders of magnitude beyond MCU-class SRAM capacities.
+Recent benchmarks confirm that LLM token generation on
+edge hardware is fundamentally memory-bandwidth-bound
+rather than compute-bound [12], [16]. Qualcomm’s NPU doc-
+umentation states explicitly that memory bandwidth is the
+bottleneck for LLM token generation rather than processing
+capacity [16].
+VLA modelsare the newest class, integrating visual per-
+ception, language understanding, and robotic control within
+unified architectures [13], [14]. SmolVLA (450M parameters)
+demonstrated that compact VLAs can match models ten times
+larger on simulation benchmarks while being trainable on a
+single GPU [13]. EdgeVLA eliminated autoregressive action
+prediction for a seven-fold inference speedup [14]. LiteVLA
+achieved the first CPU-only VLA deployment on a Raspberry
+Pi 4 using GGUF quantization and LoRA fine-tuning [17]. De-
+spite these advances, VLA edge deployment remains restricted
+to Jetson-class or mobile SoC platforms.
+B. Neural Processing Units
+NPUs are domain-specific accelerators designed to max-
+imise operations per watt for neural network inference [3],
+[4]. The STM32N6 Neural-ART NPU pairs an ARM Cortex-
+M55 core with a dedicated neural accelerator delivering 600
+GOPS at INT8, drawing 0.8–1.2 W under active inference [3],
+[18]. Capogrosso et al. benchmarked this platform at 13.7 ms
+latency and 29.5 MAC/cycle on PicoSAM2, with an energy-
+delay product (EDP) of 206.8 mJ·s [3]. The GreenWaves
+GAP9 provides a RISC-V cluster at 64 mW achieving 182.15
+MMAC/J [3]. The Sony IMX500 achieves 86.2 MAC/cycle
+and the lowest EDP at 3.4 mJ·s through in-sensor compute
+[3].
+Mobile SoC NPUs (Qualcomm Hexagon, Apple Neural
+Engine, Google Edge TPU) offer 10–45 TOPS with 6–16 GB
+shared LPDDR [12], [16]. Critical constraints include limited
+on-chip SRAM (0.5–4 MB for MCU-class), restricted operator
+sets, fixed-point arithmetic requirements, and memory band-
+width limitations.
+C. Model Compression and Quantization
+Post-Training Quantization (PTQ)converts a pre-trained
+FP32 model to lower-precision formats without retraining
+[5]. Key methods include GPTQ for layer-wise second-order
+optimisation [19], AWQ for activation-aware weight quanti-
+zation [20], and SmoothQuant for hardware-friendly W8A8
+quantization [21]. PTQ’s advantage is speed; its limitation is
+accuracy degradation below INT8.
+Quantization-Aware Training (QAT)inserts fake quanti-
+zation nodes into the training graph, allowing models to learn
+weight distributions robust to quantization noise [15]. QAT
+narrows the accuracy gap to less than 0.5% at INT8, and
+recent work demonstrates 4–22% accuracy recovery over PTQ
+at INT4 on LLM reasoning benchmarks [22].
+Hardware-Aware NASco-designs neural architectures
+with inference engines. MCUNet achieved 70.7% ImageNet
+accuracy on STM32H743 with 320 kB SRAM [7]. Once-for-
+All trains a supernet for rapid hardware-specific specialisation
+[23]. NanoNAS demonstrated laptop-scale HW-NAS targeting
+sub-512 KB microcontrollers [24].
+Additional techniques includeknowledge distillation(10–
+50×size reduction with 90–95% accuracy retention [25]) and
+LoRAfor parameter-efficient fine-tuning [26].
+III. PROPOSEDFRAMEWORK: TRAININGAPPROACHES
+FOREDGEDEPLOYMENT
+A. Taxonomy of Training Approaches
+We propose a three-level taxonomy organised by the degree
+of hardware awareness integrated into the training process.
+Level 1—Software-Only (Post-Hoc Optimisation).The
+standard pipeline: train on cloud GPUs using FP32/FP16,
+export, apply PTQ, convert via the NPU toolchain, and deploy.
+This treats model and hardware as independent concerns.
+Advantages include minimal complexity, no retraining, broad
+toolchain support (TFLite, ONNX, ST Edge AI Core, Open-
+VINO), and fast iteration (minutes to hours). Limitations
+include accuracy degradation at low bit-widths and high de-
+ployment debugging burden, since quantization issues surface
+only at the deployment stage.
+Level 2—Hybrid (Training-Time Awareness).The train-
+ing process incorporates awareness of target precision but
+
+--- PAGE 3 ---
+Fig. 1. Benchmark comparison of PicoSAM2 (336M MAC) across three edge AI processors. Data from Capogrosso et al. [3]. The STM32N6 achieves
+lowest latency but highest EDP; the IMX500 dominates energy efficiency and compute utilisation; GAP9 offers competitive MAC/J within MCU-class power
+budgets.
+not specific hardware. QAT inserts fake quantization nodes;
+knowledge distillation trains smaller student models; mixed-
+precision training maintains sensitive layers in higher preci-
+sion. Advantages include superior accuracy preservation (typ-
+ically<0.5% loss at INT8) and reduced deployment surprises.
+Limitations include retraining requirements (10–20% addi-
+tional epochs) and pipeline complexity. QAT implementation
+must match the target toolchain’s quantization scheme.
+Level 3—Hardware-Aware (Co-Design).Training is di-
+rectly coupled to target hardware constraints. This includes
+HW-NAS (MCUNet, Once-for-All, NanoNAS), compiler-in-
+the-loop training, and on-device fine-tuning. Advantages in-
+clude optimal performance and deployment-ready models.
+Limitations include deep hardware knowledge requirements,
+long iteration cycles (days to weeks), and tight hardware
+coupling. Not yet feasible for LLMs or VLAs at the MCU
+tier.
+B. Architecture-Approach Compatibility Matrix
+Table I presents the compatibility matrix based on current
+toolchain maturity and published results.
+CNN maturity stems from four factors: regular compute
+patterns mapping to MAC arrays; bounded and predictable
+memory footprints; decades of compression research pro-
+ducing well-characterised architectures; and comprehensive
+toolchain support with operator coverage above 95%. MCUNet
+exploited memory scheduling across network topology rather
+than layer-by-layer, reducing SRAM by 3.5×[7].
+LLMs face fundamentally different constraints. Autoregres-
+sive token generation creates sequential memory-bandwidth-
+bound inference where the entire weight set must be loaded
+per token [12], [16]. A benchmark of Qwen 2.5 1.5B on the
+Hailo-10H NPU showed throughput limited to 6.9 tokens/s,
+constrained by LPDDR4 bandwidth rather than the NPU’s 26
+TOPS capacity [12]. For MCU-class NPUs, even a quantized
+100M-parameter LLM requires approximately 100 MB—two
+orders of magnitude beyond on-chip capacity.
+VLAs combine a vision encoder, language backbone, and
+action decoder—three architectures running coherently [13],
+[14]. The most promising techniques include architectural
+decoupling (SmolVLA’s dual-system), non-autoregressive ac-
+tion prediction (EdgeVLA’s 7×speedup), GGUF quantization,
+
+--- PAGE 4 ---
+TABLE I
+ARCHITECTURE-APPROACHCOMPATIBILITYMATRIX
+Architecture Software-Only (PTQ) Hybrid (QAT/KD) Hardware-Aware (NAS) Binding Constraint
+CNNs✓✓✓Highly feasible✓✓Recommended if PTQ insufficient✓MCUNet, NanoNAS SRAM for activations
+LLMs (>1B)✓✓GPTQ/AWQ standard✓Emerging (LLM-QAT, QLoRA)×Very limited Memory bandwidth
+LLMs (<100M)✓✓With distillation first✓✓Distil + QAT most promising✓Unexplored potential Operator support
+VLAs (>1B)✓Per-component quantization×Immature tooling×Research frontier Multi-modal memory
+VLAs (<500M)✓✓SmolVLA feasible✓LoRA + quant. (LiteVLA)×Not explored Vision encoder cost
+Fig. 2. Trade-off comparison of three training approaches for edge NPU
+deployment. Higher values indicate more favourable characteristics. PTQ
+dominates on simplicity and speed; HW-NAS dominates on accuracy; QAT
+offers a balanced middle ground.
+LoRA fine-tuning, and action chunking [13], [14], [17].
+C. Decision Framework
+The proposed six-step decision framework proceeds as
+follows:
+Step 1: Model family identification.CNN, LLM, or
+VLA—immediately constraining viable approaches per Ta-
+ble I.
+Step 2: NPU constraint mapping.Profile available
+SRAM/Flash, supported operators, quantization formats, band-
+width, and power budget.
+Step 3: Toolchain compatibility check.Verify that the
+intended training output format is accepted. ST Edge AI
+Core accepts TFLite INT8 and ONNX INT8, constraining the
+pipeline upstream.
+Step 4: Accuracy requirement assessment.Less than
+1% loss acceptable at INT8 for a well-characterised CNN
+suggests PTQ sufficiency. Tighter requirements or transformer
+architectures recommend QAT.
+Step 5: Engineering budget evaluation.PTQ requires
+hours; QAT requires days; HW-NAS requires weeks. If de-
+Fig. 3. Six-step decision framework for selecting training approach given
+model type, NPU constraints, and deployment requirements. Decision dia-
+monds represent key branching points where practitioner choices diverge.
+ployment debugging under PTQ exceeds QAT fine-tuning cost,
+escalation is justified.
+Step 6: Deployment risk assessment.Safety-critical appli-
+cations may require QAT or HW-NAS regardless of accuracy,
+as PTQ’s failure modes are less predictable [6].
+IV. COMPARATIVEANALYSIS OFTRAININGAPPROACHES
+A. Accuracy Preservation
+For CNNs at INT8, PTQ yields less than 1% accuracy
+loss on ImageNet [15]. QAT reduces this to less than 0.5%,
+with the gap widening at lower precision—at INT4, PTQ
+can lose 3–8% while QAT recovers most through learned
+compensation [5], [22]. HW-NAS achieves highest absolute
+accuracy within resource envelopes: MCUNet’s 70.7% on
+hardware where PTQ-compressed standard architectures man-
+aged approximately 65% [7].
+For LLMs, PTQ via GPTQ/AWQ at INT4 is dominant.
+Reasoning tasks show higher sensitivity: NVIDIA benchmarks
+demonstrate 4–22% QAT accuracy recovery on mathematical
+reasoning at 4-bit [22]. At INT8, the PTQ-QAT gap narrows,
+making PTQ the practical default.
+
+--- PAGE 5 ---
+VLA accuracy data remains limited. SmolVLA achieves
+87% success on LIBERO benchmarks with standard training
+followed by quantization [13]. No systematic QAT study for
+VLAs has been published.
+B. Engineering Complexity and Iteration Speed
+PTQ offers the lowest barrier—a trained model can be quan-
+tized in minutes using TFLite, ONNX, or GPTQ. No training
+pipeline modification is required. However, deployment-stage
+debugging of quantization artifacts can consume days.
+QAT requires training loop modification (fake quantization
+nodes), adding 10–20% additional epochs. Critically, QAT
+implementation must match the target toolchain’s scheme—
+using PyTorch QAT for an ST Edge AI Core target (TFLite
+INT8) requires additional ONNX conversion that may negate
+accuracy benefits.
+HW-NAS imposes the highest overhead. MCUNet’s search
+requires hardware profiling, constrained search space defini-
+tion, architecture search (200+ GPU-hours), and training from
+scratch [7]. NanoNAS reduced this to laptop-scale [24], but
+architectures remain hardware-specific.
+C. Hardware Generalisability and Toolchain Dependency
+Software-only approaches produce the most portable
+models—the same FP32 model can be quantized differently
+for different NPUs. Hybrid approaches are moderately portable
+across same-precision NPUs. Hardware-aware approaches pro-
+duce the least portable models, tightly bound to specific
+hardware targets.
+The NPU toolchain acts as a hard upstream constraint.
+ST Edge AI Core accepts TFLite INT8 and ONNX INT8
+[18]; TFLite for Edge TPU requires full integer quantization;
+TensorRT for Jetson supports FP16, INT8, and INT4. Three
+independent papers identify toolchain immaturity as a field-
+wide problem [3], [6], [11], confirming that platform fragmen-
+tation is the largest barrier to standardised training-for-edge
+pipelines.
+V. CASESTUDY: YOLOV8N ONSTM32N6570-DK
+A. Experimental Setup
+The case study deploys YOLOv8n (Ultralytics) for cus-
+tom object detection (car keys and house keys) on the
+STM32N6570-DK. The target hardware features the Neural-
+ART NPU at 600 GOPS (INT8), ARM Cortex-M55,
+1.5 MB on-chip SRAM, and external flash via XSPI2. The
+toolchain comprises ST Edge AI Core (stedgeai v4.0.0),
+STM32CubeIDE, and STM32CubeProgrammer. The training
+approach was Level 1 (software-only): standard GPU training
+via Ultralytics followed by TFLite INT8 PTQ.
+B. Deployment Pipeline
+The deployment followed five stages: (1) train YOLOv8n
+using Ultralytics with standard FP32 training; (2) export to
+TFLite with INT8 quantization using a representative cali-
+bration dataset; (3) convert via ST Edge AI Core for the
+Neural-ART NPU; (4) flash NPU weights to external flash
+at specified addresses; (5) configure firmware for memory-
+mapped inference via XSPI2.
+C. Results
+The deployment achieved29 ms inference per frame, down
+from approximately 14 seconds in initial non-NPU (CPU-only)
+attempts—a 483×speedup. This is consistent with Capogrosso
+et al.’s 13.7 ms for PicoSAM2 on the same NPU [3], with the
+difference attributable to YOLOv8n’s larger architecture. At
+29 ms, the system achieves approximately 34 FPS, meeting the
+10–30 Hz decision rates for real-time robotics [6] and falling
+below the 100 ms interactive threshold.
+D. Deployment Challenges and Training Strategy Implications
+Four categories of deployment challenges were encountered:
+INT8 tensor shape mismatches:The Ultralytics TFLite
+export produced tensor dimensions the ST Edge AI Core con-
+verter did not expect, requiring iterative cross-tool debugging.
+QAT would have mitigated this by validating against the target
+quantization format during training.
+DCache coherency issues:The NPU’s direct memory
+access conflicted with the Cortex-M55’s data cache, causing
+intermittent incorrect results. This is a hardware-level issue no
+training strategy prevents.
+NPU weight flash address corrections:Quantized weights
+required specific memory addresses for memory-mapped ac-
+cess. Misalignment caused silent failures with limited diag-
+nostic information—consistent with the toolchain immaturity
+identified across all three surveyed papers [3], [6], [11].
+XSPI2 configuration:Manual firmware modification was
+required for the external flash memory-mapped mode. This is
+a system-level issue independent of training strategy.
+Of four challenge categories, QAT would have directly
+mitigated two (tensor mismatches and weight format issues).
+The practical calculus: if deployment debugging exceeds two
+to three times the QAT fine-tuning cost, QAT is the more
+efficient path.
+E. Training Approach Justification
+Level 1 was selected because YOLOv8n is a well-
+characterised CNN, the Neural-ART NPU is CNN-optimised
+with mature operator support, and the deployment was a
+research prototype prioritising iteration speed. Level 2 was
+unnecessary given acceptable accuracy but would have been
+recommended had debugging time exceeded QAT cost. Level 3
+was unnecessary since YOLOv8n already fits within the NPU’s
+resource envelope.
+VI. DISCUSSION
+A. Key Insights
+The most significant finding is that the training approach
+shapes the entire deployment experience, not merely accu-
+racy. PTQ’s simplicity at training is offset by unpredictable
+deployment debugging, while QAT’s upfront complexity yields
+smoother deployment—mirroring the software engineering
+
+--- PAGE 6 ---
+Fig. 4. Timeline of edge deployment maturity across CNN, LLM, and VLA architectures. CNNs have a decade-long head start with mature toolchains
+and HW-NAS; LLMs entered edge deployment in 2023; VLAs are at the frontier with first edge-feasible models appearing in 2025. “This work” marks the
+YOLOv8n case study on STM32N6.
+principle that early correctness investment reduces downstream
+defect costs.
+The compatibility matrix reveals a stark maturity gradient.
+CNNs benefit from two decades of co-evolution between
+model design, compression, and hardware. LLMs are ap-
+proximately three to four years behind, with software-only
+quantization as the practical ceiling on MCU-class hardware.
+VLAs trail by another one to two years, with edge deployment
+achievable only through aggressive architectural innovation
+rather than standardised compression.
+B. The Memory Bandwidth Wall
+Memory bandwidth—not compute (TOPS)—is the binding
+constraint for on-device LLMs. The STM32N6 offers 600
+GOPS, theoretically sufficient for small transformers. How-
+ever, its external flash interface provides bandwidth orders of
+magnitude below autoregressive demands. Each token requires
+full weight matrix loading. This is confirmed by Intel’s NPU
+documentation: “although NPU performance still matters, it
+becomes less of the bottleneck compared to the available
+DRAM bandwidth” [16]. This constraint requires hardware-
+level solutions—compute-in-memory, 3D-stacked SRAM, or
+hybrid execution—rather than better training strategies.
+C. VLAs: The Emerging Frontier
+SmolVLA’s dual-system architecture (frozen VLM
+backbone + lightweight action expert), EdgeVLA’s non-
+autoregressive prediction, and LiteVLA’s GGUF+LoRA
+approach collectively demonstrate that VLA edge deployment
+will follow the same trajectory as LLM deployment—driven
+by architectural innovation rather than compression of large
+models [13], [14], [17]. The lessons from CNN pipelines
+(co-design model and engine, prioritise memory scheduling,
+prefer structured compression) are directly transferable. Fig. 4
+visualises this maturity gradient across all three architecture
+families.
+D. Limitations
+The experimental validation covers only one architecture
+(CNN) on one NPU (STM32N6). Claims regarding LLMs and
+VLAs are grounded in published literature rather than first-
+hand deployment. The rapidly evolving toolchain landscape
+may outdate specific compatibility claims. The framework
+assumes single-model deployment and does not address multi-
+model orchestration.
+VII. CONCLUSION ANDFUTUREDIRECTIONS
+This paper has presented a systematic framework for select-
+ing training approaches when deploying AI models on edge
+NPUs. The three-level taxonomy—software-only PTQ, hybrid
+
+--- PAGE 7 ---
+QAT, and hardware-aware NAS—provides a structured vocab-
+ulary for the training-deployment interface. The architecture-
+approach compatibility matrix establishes that CNNs are well-
+served across all levels, LLMs are constrained to software-
+only on MCU-class hardware, and VLAs require aggressive
+architectural innovation for edge feasibility.
+The YOLOv8n case study validates that PTQ is sufficient
+for well-characterised CNNs on mature NPU platforms, but
+demonstrates that training strategy choice materially impacts
+deployment debugging. Two of four debugging categories
+would have been mitigated by QAT, suggesting the total cost
+of PTQ (training + debugging) can exceed QAT (training +
+fine-tuning) even when PTQ accuracy is acceptable.
+Unsolved challenges toward fully cloud-independent AI
+include: on-device training remains impractical for MCU-
+class hardware [7]; no standardised training-to-edge pipeline
+exists across NPU vendors [11]; the memory bandwidth wall
+prevents LLM deployment on MCUs; unified benchmarking
+is absent [3]; energy reporting lacks consistency [11]; multi-
+model scheduling has no formal guarantees [6]; and continual
+on-device learning remains an open problem.
+Future work should extend this framework with case studies
+deploying quantized LLMs on RISC-V NPUs and compact
+VLAs on Jetson platforms to validate the compatibility matrix
+with first-hand deployment data across all three architecture
+families.
+REFERENCES
+[1] Z. Zhou, X. Chen, E. Li, L. Zeng, K. Luo, and J. Zhang, “Edge
+intelligence: Paving the last mile of artificial intelligence with edge
+computing,”Proc. IEEE, vol. 107, no. 8, pp. 1738–1762, 2019.
+[2] S. Deng, H. Zhao, W. Fang, J. Yin, S. Dustdar, and A. Y . Zomaya,
+“Edge intelligence: The confluence of edge computing and artificial
+intelligence,”IEEE Internet Things J., vol. 7, no. 8, pp. 7457–7469,
+2020.
+[3] L. Capogrosso, P. Bonazzi, and M. Magno, “Performance analysis of
+edge and in-sensor AI processors: A comparative review,” inProc. IEEE
+I2MTC, Nancy, France, 2026.
+[4] X. Wang, Z. Tang, J. Guo, T. Meng, C. Wang, T. Wang, and W. Jia,
+“Empowering edge intelligence: A comprehensive survey on on-device
+AI models,”ACM Comput. Surv., vol. 57, no. 9, pp. 1–39, 2025.
+[5] A. Gholami, S. Kim, Z. Dong, Z. Yao, M. W. Mahoney, and K.
+Keutzer, “A survey of quantization methods for efficient neural network
+inference,” inLow-Power Computer Vision. Chapman and Hall/CRC,
+2022, pp. 291–326.
+[6] A. Dawane, “On-device small language model inference acceleration
+for real-time robotics: A survey,” inProc. IEEE CCWC, Las Vegas, NV ,
+USA, Jan. 2026.
+[7] J. Lin, W.-M. Chen, Y . Lin, J. Cohn, C. Gan, and S. Han, “MCUNet:
+Tiny deep learning on IoT devices,” inProc. NeurIPS, 2020.
+[8] M. Abdinet al., “Phi-4 technical report,”arXiv preprint
+arXiv:2412.08905, 2024.
+[9] H. Touvronet al., “Llama 2: Open foundation and fine-tuned chat
+models,”arXiv preprint arXiv:2307.09288, 2023.
+[10] Z. Liuet al., “MobileLLM: Optimizing sub-billion parameter language
+models for on-device use cases,” inProc. ICML, 2024.
+[11] X. Wang, Q. Li, and W. Jia, “Cognitive edge computing: A compre-
+hensive survey on optimizing large models and AI agents for pervasive
+deployment,”arXiv preprint arXiv:2501.03265v2, Nov. 2025.
+[12] “LLM inference at the edge: Mobile, NPU, and GPU perfor-
+mance efficiency trade-offs under sustained load,”arXiv preprint
+arXiv:2603.23640, 2026.
+[13] M. Shukoret al., “SmolVLA: A vision-language-action model for
+affordable and efficient robotics,”arXiv preprint arXiv:2506.01844, Jun.
+2025.
+[14] P. Budzianowskiet al., “EdgeVLA: Efficient vision-language-action
+models,”arXiv preprint arXiv:2507.14049, Jul. 2025.
+[15] B. Jacobet al., “Quantization and training of neural networks for
+efficient integer-arithmetic-only inference,” inProc. IEEE/CVF CVPR,
+2018, pp. 2704–2713.
+[16] Qualcomm, “Unlocking on-device generative AI with an NPU and
+heterogeneous computing,” Qualcomm Whitepaper, 2024.
+[17] “Lite VLA: Efficient vision-language-action control on CPU-bound edge
+robots,”arXiv preprint arXiv:2511.05642, Nov. 2025.
+[18] STMicroelectronics, “The STM32N6 series.” [Online]. Available: https:
+//www.st.com/en/microcontrollers-microprocessors/stm32n6-series.html
+[19] E. Frantar, S. Ashkboos, T. Hoefler, and D. Alistarh, “GPTQ: Accurate
+post-training quantization for generative pre-trained transformers,” in
+Proc. ICLR, 2023.
+[20] J. Linet al., “AWQ: Activation-aware weight quantization for on-device
+LLM compression and acceleration,”Proc. MLSys, vol. 6, pp. 87–100,
+2024.
+[21] G. Xiao, J. Lin, M. Seznec, H. Wu, J. Demouth, and S. Han,
+“SmoothQuant: Accurate and efficient post-training quantization for
+large language models,” inProc. ICML, 2023.
+[22] NVIDIA, “How quantization aware training enables low-precision ac-
+curacy recovery,” NVIDIA Technical Blog, Nov. 2025.
+[23] H. Cai, C. Gan, T. Wang, Z. Zhang, and S. Han, “Once-for-All: Train
+one network and specialize it for efficient deployment,” inProc. ICLR,
+2020.
+[24] A. M. Garavagno, E. Ragusa, A. Frisoli, and P. Gastaldo, “An affordable
+hardware-aware neural architecture search for deploying CNNs on ultra-
+low-power computing platforms,”IEEE Sensors Lett., 2024.
+[25] X. Xuet al., “A survey on knowledge distillation of large language
+models,”arXiv preprint arXiv:2402.13116, 2024.
+[26] E. J. Huet al., “LoRA: Low-rank adaptation of large language models,”
+inProc. ICLR, 2022.
+[27] Y . Zhenget al., “A review on edge large language models: Design,
+execution, and applications,”ACM Comput. Surv., vol. 57, no. 8, pp.
+1–35, 2025.
+[28] S. Somvanshiet al., “From tiny machine learning to tiny deep learning:
+A survey,”ACM Comput. Surv., vol. 58, no. 7, Dec. 2025.
+[29] D. Xuet al., “Fast on-device LLM inference with NPUs,” inProc.
+ASPLOS, 2025, pp. 445–462.
+[30] G. Hinton, O. Vinyals, and J. Dean, “Distilling the knowledge in a neural
+network,”arXiv preprint arXiv:1503.02531, 2015.

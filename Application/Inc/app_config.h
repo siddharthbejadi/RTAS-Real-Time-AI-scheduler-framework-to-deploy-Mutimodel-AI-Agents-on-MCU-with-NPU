@@ -41,9 +41,9 @@
    "face"}\
 
 /* Postprocessing BlazeFace configuration */
-#define AI_FD_BLAZEFACE_PP_CONF_THRESHOLD    (0.6f)
-#define AI_FD_BLAZEFACE_PP_IOU_THRESHOLD     (0.3f)
-#define AI_FD_BLAZEFACE_PP_MAX_BOXES_LIMIT   (10)
+#define AI_FD_BLAZEFACE_PP_CONF_THRESHOLD    (0.55f)
+#define AI_FD_BLAZEFACE_PP_IOU_THRESHOLD     (0.55f)
+#define AI_FD_BLAZEFACE_PP_MAX_BOXES_LIMIT   (5)
 
 /* Display */
 #define WELCOME_MSG_1         "Face Recognition"
@@ -64,9 +64,9 @@
 
 /* Cosine-similarity threshold to accept a face match. 0.50–0.70 is typical  */
 /* for MobileFaceNet; tune on a small validation set with your own faces.    */
-#define FACE_RECOG_MATCH_THRESHOLD    0.55f
+#define FACE_RECOG_MATCH_THRESHOLD    0.70f
 
 /* Detection confidence required before we even attempt recognition.         */
-#define FACE_RECOG_MIN_DET_CONF       0.70f
+#define FACE_RECOG_MIN_DET_CONF       0.60f
 
 #endif

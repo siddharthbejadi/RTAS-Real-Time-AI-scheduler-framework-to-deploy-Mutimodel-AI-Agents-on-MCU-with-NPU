@@ -1,24 +1,43 @@
 #include "tim_app.h"
 #include "tim_inference.h"
+#include "face_store.h"
 #include "stm32n6xx_hal.h"
 #include <stdio.h>
 #include <string.h>
 
 extern UART_HandleTypeDef huart1;
 
-static TIM_ChatState_t s_chat;
+static TIM_ChatState_t s_guest_chat;
+static TIM_ChatState_t s_user_chats[FACE_STORE_MAX_RECORDS];
+static TIM_ChatState_t *s_chat = &s_guest_chat;
 static char s_line[TIM_CHAT_TEXT_MAX];
 static uint32_t s_line_len = 0U;
+static uint8_t s_tim_ready = 0U;
+
+static void InitChatState(TIM_ChatState_t *chat)
+{
+    if (chat == NULL)
+    {
+        return;
+    }
+
+    memset(chat, 0, sizeof(*chat));
+    chat->intent_id = TIM_INTENT_UNKNOWN;
+    chat->ready = s_tim_ready;
+    strncpy(chat->response,
+            s_tim_ready ? "Hey VIP! Type Here ^_^" : "TIM init failed.",
+            sizeof(chat->response) - 1U);
+}
 
 static void SyncCurrentLine(void)
 {
     uint32_t n = s_line_len;
-    if (n >= sizeof(s_chat.current_input))
+    if (n >= sizeof(s_chat->current_input))
     {
-        n = sizeof(s_chat.current_input) - 1U;
+        n = sizeof(s_chat->current_input) - 1U;
     }
-    memcpy(s_chat.current_input, s_line, n);
-    s_chat.current_input[n] = '\0';
+    memcpy(s_chat->current_input, s_line, n);
+    s_chat->current_input[n] = '\0';
 }
 
 static void SubmitLine(const char *text)
@@ -33,59 +52,79 @@ static void SubmitLine(const char *text)
 
     for (uint32_t i = 0U; i < (TIM_CHAT_HISTORY_COUNT - 1U); i++)
     {
-        s_chat.history[i] = s_chat.history[i + 1U];
+        s_chat->history[i] = s_chat->history[i + 1U];
     }
-    memset(&s_chat.history[TIM_CHAT_HISTORY_COUNT - 1U], 0, sizeof(s_chat.history[0]));
+    memset(&s_chat->history[TIM_CHAT_HISTORY_COUNT - 1U], 0, sizeof(s_chat->history[0]));
 
-    strncpy(s_chat.input, text, sizeof(s_chat.input) - 1U);
-    s_chat.ready = 1U;
-    s_chat.has_message = 1U;
+    strncpy(s_chat->input, text, sizeof(s_chat->input) - 1U);
+    s_chat->ready = s_tim_ready;
+    s_chat->has_message = 1U;
 
     if (TIM_Predict(text, &intent, &conf) == 0)
     {
-        s_chat.intent_id = intent;
-        s_chat.confidence = conf;
-        strncpy(s_chat.response, TIM_ResponseForIntent(intent), sizeof(s_chat.response) - 1U);
+        s_chat->intent_id = intent;
+        s_chat->confidence = conf;
+        strncpy(s_chat->response, TIM_ResponseForIntent(intent), sizeof(s_chat->response) - 1U);
     }
     else
     {
-        s_chat.intent_id = TIM_INTENT_UNKNOWN;
-        s_chat.confidence = 0.0f;
-        strncpy(s_chat.response, "TIM model is not ready.", sizeof(s_chat.response) - 1U);
+        s_chat->intent_id = TIM_INTENT_UNKNOWN;
+        s_chat->confidence = 0.0f;
+        strncpy(s_chat->response, "TIM model is not ready.", sizeof(s_chat->response) - 1U);
     }
 
-    TIM_ChatTurn_t *turn = &s_chat.history[TIM_CHAT_HISTORY_COUNT - 1U];
-    strncpy(turn->input, s_chat.input, sizeof(turn->input) - 1U);
-    strncpy(turn->response, s_chat.response, sizeof(turn->response) - 1U);
-    turn->intent_id = s_chat.intent_id;
-    turn->confidence = s_chat.confidence;
+    TIM_ChatTurn_t *turn = &s_chat->history[TIM_CHAT_HISTORY_COUNT - 1U];
+    strncpy(turn->input, s_chat->input, sizeof(turn->input) - 1U);
+    strncpy(turn->response, s_chat->response, sizeof(turn->response) - 1U);
+    turn->intent_id = s_chat->intent_id;
+    turn->confidence = s_chat->confidence;
     turn->valid = 1U;
-    s_chat.turn_count++;
+    s_chat->turn_count++;
 
     printf("[TIM] \"%s\" -> %ld %s (%.1f%%): %s\r\n",
-           s_chat.input,
-           (long)s_chat.intent_id,
-           TIM_IntentName(s_chat.intent_id),
-           (double)(s_chat.confidence * 100.0f),
-           s_chat.response);
+           s_chat->input,
+           (long)s_chat->intent_id,
+           TIM_IntentName(s_chat->intent_id),
+           (double)(s_chat->confidence * 100.0f),
+           s_chat->response);
 }
 
 void TIM_AppInit(void)
 {
-    memset(&s_chat, 0, sizeof(s_chat));
-    s_chat.intent_id = TIM_INTENT_UNKNOWN;
+    s_tim_ready = (TIM_Inference_Init() == 0) ? 1U : 0U;
 
-    if (TIM_Inference_Init() == 0)
+    InitChatState(&s_guest_chat);
+    for (uint32_t i = 0U; i < FACE_STORE_MAX_RECORDS; i++)
     {
-        s_chat.ready = 1U;
-        strncpy(s_chat.response, "Hey VIP! 🤖 (◕‿‿◕｡).", sizeof(s_chat.response) - 1U);
-        printf("[TIM] ready. Type a message and press Enter.\r\n");
+        InitChatState(&s_user_chats[i]);
+    }
+    TIM_AppClearUser();
+
+    printf(s_tim_ready ?
+           "[TIM] ready. Type a message and press Enter.\r\n" :
+           "[TIM] init failed.\r\n");
+}
+
+void TIM_AppSetUser(int32_t user_idx)
+{
+    if ((user_idx >= 0) && (user_idx < (int32_t)FACE_STORE_MAX_RECORDS))
+    {
+        s_chat = &s_user_chats[user_idx];
     }
     else
     {
-        strncpy(s_chat.response, "TIM init failed.", sizeof(s_chat.response) - 1U);
-        printf("[TIM] init failed.\r\n");
+        s_chat = &s_guest_chat;
     }
+
+    s_line_len = 0U;
+    SyncCurrentLine();
+}
+
+void TIM_AppClearUser(void)
+{
+    s_chat = &s_guest_chat;
+    s_line_len = 0U;
+    SyncCurrentLine();
 }
 
 void TIM_AppPoll(void)
@@ -125,7 +164,7 @@ void TIM_AppPoll(void)
 
 const TIM_ChatState_t *TIM_AppGetState(void)
 {
-    return &s_chat;
+    return s_chat;
 }
 
 void TIM_AppSubmitText(const char *text)
