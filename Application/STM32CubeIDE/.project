@@ -52,6 +52,11 @@
 			<locationURI>PARENT-1-PROJECT_LOC/Src/app_camerapipeline.c</locationURI>
 		</link>
 		<link>
+			<name>Application/app_depth.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Src/app_depth.c</locationURI>
+		</link>
+		<link>
 			<name>Application/app_fuseprogramming.c</name>
 			<type>1</type>
 			<locationURI>PARENT-1-PROJECT_LOC/Src/app_fuseprogramming.c</locationURI>
@@ -127,6 +132,11 @@
 			<locationURI>PARENT-2-PROJECT_LOC/Model/STM32N6570-DK/network_embed.c</locationURI>
 		</link>
 		<link>
+			<name>Application/depth.c</name>
+			<type>1</type>
+			<locationURI>PARENT-2-PROJECT_LOC/Model/STM32N6570-DK/depth.c</locationURI>
+		</link>
+		<link>
 			<name>Application/npu_cache.c</name>
 			<type>1</type>
 			<locationURI>PARENT-2-PROJECT_LOC/Middlewares/stedgeai-lib/Npu/Devices/STM32N6xx/npu_cache.c</locationURI>
@@ -140,6 +150,11 @@
 			<name>Application/stai_network_embed.c</name>
 			<type>1</type>
 			<locationURI>PARENT-2-PROJECT_LOC/Model/STM32N6570-DK/stai_network_embed.c</locationURI>
+		</link>
+		<link>
+			<name>Application/stai_depth.c</name>
+			<type>1</type>
+			<locationURI>PARENT-2-PROJECT_LOC/Model/STM32N6570-DK/stai_depth.c</locationURI>
 		</link>
 		<link>
 			<name>Application/stm32_lcd_ex.c</name>

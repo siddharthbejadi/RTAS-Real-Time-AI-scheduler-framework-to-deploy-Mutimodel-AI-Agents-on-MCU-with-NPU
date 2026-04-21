@@ -3,8 +3,10 @@
 #include "stm32_lcd.h"
 #include "stm32n6570_discovery.h"
 #include "stm32n6xx_hal.h"
+#include "app_config.h"
 #include "face_store.h"
 #include "face_recog.h"
+#include "app_depth.h"
 #include "tim_app.h"
 #include "tim_inference.h"
 #include <string.h>
@@ -26,9 +28,12 @@ extern const char *classes_table[];
 extern int32_t last_recog_idx;
 extern float   last_recog_score;
 extern float   last_det_conf;
+extern float   last_depth_match_score;
+extern uint8_t last_depth_template_seen;
 extern uint32_t g_cpu_frame_ms;
 extern uint32_t g_npu_infer_ms;
 extern uint32_t g_embed_npu_ms;
+extern uint32_t g_depth_npu_ms;
 
 /* Enrollment request flag — UI raises it; main.c actions it at end of frame. */
 volatile uint8_t g_enroll_requested = 0;
@@ -50,6 +55,10 @@ static int32_t pending_delete_idx = -1;
 static uint8_t pending_admin_value = 0U;
 static uint32_t settings_denied_ts = 0U;
 static uint32_t tim_handled_turn_count = 0U;
+
+void DrawText(uint32_t x, uint32_t y, uint8_t *pText,
+              Text_AlignModeTypdef Mode, sFONT *fonts,
+              uint32_t text_color, uint32_t back_color);
 
 /* ───────────────────────────────────────────── */
 /* COLORS                                       */
@@ -122,6 +131,63 @@ static void DrawDetectionBoxes(const od_pp_outBuffer_t *boxes,
             UTIL_LCD_DrawRect(x + 1U, y + 1U, w - 2U, h - 2U, col);
         }
     }
+}
+
+static uint32_t DepthHeatColor(uint8_t v)
+{
+    uint32_t r = (uint32_t)v;
+    uint32_t g = (uint32_t)((v > 96U) ? 220U : (v * 220U) / 96U);
+    uint32_t b = (uint32_t)(255U - v);
+    return 0xFF000000U | (r << 16) | (g << 8) | b;
+}
+
+static void DrawDepthPreviewMap(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+{
+    UTIL_LCD_FillRect(x, y, w, h, 0xFF101820U);
+    UTIL_LCD_DrawRect(x, y, w, h, 0xFF405060U);
+
+    if (g_depth_preview_ready == 0U)
+    {
+        DrawText(x + 14U, y + (h / 2U) - 6U,
+                 (uint8_t*)"Waiting for depth",
+                 LEFT_MODE, &Font12, 0xFF8090A0U, 0xFF101820U);
+        return;
+    }
+
+    for (uint32_t py = 0U; py < h; py += 2U)
+    {
+        uint32_t sy = (py * DEPTH_PREVIEW_H) / h;
+        for (uint32_t px = 0U; px < w; px += 2U)
+        {
+            uint32_t sx = (px * DEPTH_PREVIEW_W) / w;
+            uint8_t v = g_depth_preview[sy * DEPTH_PREVIEW_W + sx];
+            UTIL_LCD_FillRect(x + px, y + py, 2U, 2U, DepthHeatColor(v));
+        }
+    }
+    UTIL_LCD_DrawRect(x, y, w, h, 0xFF8DEBFFU);
+}
+
+static void DrawLiveCheckRow(uint32_t y,
+                             const char *name,
+                             const char *detail,
+                             uint8_t ok,
+                             uint8_t active)
+{
+    const uint32_t fill = ok ? 0xDD103020U :
+                          (active ? 0xDD302400U : 0xDD181820U);
+    const uint32_t border = ok ? 0xFF00FF88U :
+                            (active ? 0xFFFFCC00U : 0xFF405060U);
+    const uint32_t state_col = ok ? 0xFF00FF88U :
+                              (active ? 0xFFFFCC00U : 0xFF8090A0U);
+    const char *state = ok ? "[OK]" : (active ? "[RUN]" : "[WAIT]");
+
+    Panel(170U, y, 460U, 42U, fill, border);
+    DrawText(190U, y + 12U, (uint8_t*)state,
+             LEFT_MODE, &Font16, state_col, fill);
+    DrawText(260U, y + 8U, (uint8_t*)name,
+             LEFT_MODE, &Font16, 0xFFFFFFFFU, fill);
+    DrawText(260U, y + 26U, (uint8_t*)detail,
+             LEFT_MODE, &Font12, 0xFFB8E8FFU, fill);
 }
 
 static void ResetPendingEnrollName(void)
@@ -376,6 +442,17 @@ static void DrawAuthSuccess(void)
 {
     const uint32_t bg = 0xEE0A0A12U;
     const char *who = "User";
+    uint32_t elapsed = HAL_GetTick() - state_entry_time;
+    uint8_t face_ok = (last_det_conf >= FACE_RECOG_MIN_DET_CONF) ? 1U : 0U;
+    uint8_t identity_ok = ((last_recog_idx >= 0) && session_active) ? 1U : 0U;
+    uint8_t depth_active = (g_depth_npu_ms > 0U) ? 1U : 0U;
+    float depth_display_score = (last_depth_template_seen != 0U) ?
+                                last_depth_match_score :
+                                g_depth_live_score;
+    uint8_t depth_ok = ((g_depth_preview_ready != 0U) &&
+                        ((last_depth_template_seen != 0U) ?
+                         (last_depth_match_score >= FACE_DEPTH_MATCH_THRESHOLD) :
+                         (g_depth_live_score >= 0.20f))) ? 1U : 0U;
 
     if (session_active && (session_user_idx >= 0))
     {
@@ -388,24 +465,55 @@ static void DrawAuthSuccess(void)
 
     UTIL_LCD_FillRect(0U, 0U, UI_SCREEN_W, UI_SCREEN_H, bg);
 
-    DrawText(0U, 120U, (uint8_t*)"Access granted",
+    DrawText(0U, 72U, (uint8_t*)"Access granted",
              CENTER_MODE, &Font24, 0xFF00FF88U, bg);
 
     char hello_buf[64];
     snprintf(hello_buf, sizeof(hello_buf), "Hello, %s", who);
-    DrawText(0U, 170U, (uint8_t*)hello_buf,
+    DrawText(0U, 116U, (uint8_t*)hello_buf,
              CENTER_MODE, &Font20, 0xFFFFFFFFU, bg);
 
-    DrawText(0U, 210U, (uint8_t*)"Loading secure workspace...",
-             CENTER_MODE, &Font20, 0xFFFFFFFFU, bg);
+    char face_detail[64];
+    char identity_detail[64];
+    char depth_detail[64];
 
-    uint32_t elapsed = HAL_GetTick() - state_entry_time;
-    uint32_t w = (elapsed * 400U) / 1500U;
+    snprintf(face_detail, sizeof(face_detail),
+             "BlazeFace confidence %.0f%%",
+             last_det_conf * 100.0f);
+    snprintf(identity_detail, sizeof(identity_detail),
+             "Face embedding similarity %.0f%%",
+             last_recog_score * 100.0f);
+    snprintf(depth_detail, sizeof(depth_detail),
+             "%s %.0f%%, %lums",
+             (last_depth_template_seen != 0U) ? "Stored depth match" : "FastDepth shape",
+             depth_display_score * 100.0f,
+             (unsigned long)g_depth_npu_ms);
+
+    DrawLiveCheckRow(164U,
+                     "Face localization",
+                     face_detail,
+                     face_ok,
+                     1U);
+    DrawLiveCheckRow(216U,
+                     "Identity embedding match",
+                     identity_detail,
+                     identity_ok,
+                     face_ok);
+    DrawLiveCheckRow(268U,
+                     "Monocular depth consistency",
+                     depth_detail,
+                     depth_ok,
+                     depth_active);
+
+    DrawText(0U, 332U, (uint8_t*)"Live security handoff",
+             CENTER_MODE, &Font16, 0xFF8DEBFFU, bg);
+
+    uint32_t w = (elapsed * 400U) / 3000U;
     if (w > 400U) w = 400U;
 
-    UTIL_LCD_FillRect(200U, 250U, 400U, 12U, 0xFF333333U);
-    UTIL_LCD_FillRect(200U, 250U, w,    12U, 0xFF00FFFFU);
-    UTIL_LCD_DrawRect(200U, 250U, 400U, 12U, 0xFF00FFFFU);
+    UTIL_LCD_FillRect(200U, 365U, 400U, 12U, 0xFF333333U);
+    UTIL_LCD_FillRect(200U, 365U, w,    12U, 0xFF00FFFFU);
+    UTIL_LCD_DrawRect(200U, 365U, 400U, 12U, 0xFF00FFFFU);
 }
 
 /* ───────────────────────────────────────────── */
@@ -439,7 +547,7 @@ static void DrawAuth(od_pp_out_t *pp)
     const char *who = "Unknown";
     uint32_t status_col = 0xFF888888U;
     char line1[64];
-    char line2[64];
+    char line2[96];
     char line3[64];
 
     if (nb == 0U)
@@ -473,7 +581,11 @@ static void DrawAuth(od_pp_out_t *pp)
                 who = rec->name;
                 snprintf(line1, sizeof(line1), "Status: Access granted");
                 snprintf(line2, sizeof(line2), "Welcome, %s", who);
-                snprintf(line3, sizeof(line3), "Match %.0f%%", last_recog_score * 100.0f);
+                snprintf(line3, sizeof(line3), "Identity match %.0f%%  Depth shape %.0f%%",
+                         last_recog_score * 100.0f,
+                         ((last_depth_template_seen != 0U) ?
+                          last_depth_match_score :
+                          g_depth_live_score) * 100.0f);
                 status_col = 0xFF00FF88U;
             }
             else
@@ -494,7 +606,11 @@ static void DrawAuth(od_pp_out_t *pp)
 
             snprintf(line1, sizeof(line1), "Status: Face detected");
             snprintf(line2, sizeof(line2), "Authenticating...");
-            snprintf(line3, sizeof(line3), "Detection %.0f%%", det_conf);
+            snprintf(line3, sizeof(line3), "Face detection %.0f%%  Depth shape %.0f%%",
+                     det_conf,
+                     ((last_depth_template_seen != 0U) ?
+                      last_depth_match_score :
+                      g_depth_live_score) * 100.0f);
             status_col = 0xFF00CFFFU;
         }
     }
@@ -559,36 +675,48 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
     snprintf(namebuf, sizeof(namebuf), "Welcome: %s", who);
     if ((r != NULL) && (nb > 0U))
     {
-        snprintf(line2, sizeof(line2), "det %.0f%% / match %.0f%%",
-                 r[0].conf * 100.0f, last_recog_score * 100.0f);
+        snprintf(line2, sizeof(line2),
+                 "Face %.0f%%  Identity %.0f%%  Depth %.0f%%",
+                 r[0].conf * 100.0f,
+                 last_recog_score * 100.0f,
+                 ((last_depth_template_seen != 0U) ?
+                  last_depth_match_score :
+                  g_depth_live_score) * 100.0f);
     }
     else
     {
-        snprintf(line2, sizeof(line2), "Camera active / session unlocked");
+        snprintf(line2, sizeof(line2),
+                 "Face --  Identity %.0f%%  Depth %.0f%%",
+                 last_recog_score * 100.0f,
+                 ((last_depth_template_seen != 0U) ?
+                  last_depth_match_score :
+                  g_depth_live_score) * 100.0f);
     }
 
-    uint32_t status_y = cam_y + cam_h + 14U;
-    uint32_t status_h = (432U > status_y) ? (432U - status_y) : 0U;
-    if (status_h >= 112U)
+    uint32_t depth_y = cam_y + cam_h;
+    uint32_t depth_h = cam_h;
+    if ((depth_y + depth_h) <= 440U)
     {
-        Panel(cam_x, status_y, cam_w, status_h, panel_bg, 0xFF00FFFFU);
-        DrawText(cam_x + 12U, status_y + 14U, (uint8_t*)"MAIN ACCESS PANEL",
-                 LEFT_MODE, &Font16, 0xFF00FFFFU, panel_bg);
-        DrawText(cam_x + 12U, status_y + 42U, (uint8_t*)"Access granted.",
-                 LEFT_MODE, &Font16, 0xFF00FF88U, panel_bg);
-        DrawText(cam_x + 12U, status_y + 70U, (uint8_t*)namebuf,
-                 LEFT_MODE, &Font16, name_col, panel_bg);
-        DrawText(cam_x + 12U, status_y + 100U, (uint8_t*)line2,
-                 LEFT_MODE, &Font12, 0xFFFFFFFFU, panel_bg);
+        DrawDepthPreviewMap(cam_x, depth_y, cam_w, depth_h);
     }
 
 
     /* Bottom toolbar — corrected for 800x480 landscape */
+    Panel(10U, 20U, 514U, 82U, panel_bg, 0xFF00FFFFU);
+    DrawText(26U, 32U, (uint8_t*)"MAIN ACCESS PANEL",
+             LEFT_MODE, &Font16, 0xFF00FFFFU, panel_bg);
+    DrawText(26U, 56U, (uint8_t*)"Access granted.",
+             LEFT_MODE, &Font16, 0xFF00FF88U, panel_bg);
+    DrawText(208U, 56U, (uint8_t*)namebuf,
+             LEFT_MODE, &Font16, name_col, panel_bg);
+    DrawText(26U, 80U, (uint8_t*)line2,
+             LEFT_MODE, &Font12, 0xFFFFFFFFU, panel_bg);
+
     const TIM_ChatState_t *chat = TIM_AppGetState();
-    Panel(10U, 20U, 514U, 402U, chat_bg, 0xFF2FA8CCU);
-    DrawText(36U, 36U, (uint8_t*)"Ask TIM",
+    Panel(10U, 112U, 514U, 310U, chat_bg, 0xFF2FA8CCU);
+    DrawText(36U, 126U, (uint8_t*)"Ask TIM",
              LEFT_MODE, &Font16, 0xFF8DEBFFU, chat_bg);
-    DrawText(198U, 38U, (uint8_t*)"Secure workspace active",
+    DrawText(198U, 128U, (uint8_t*)"Secure workspace active",
              LEFT_MODE, &Font12, 0xFF00FF88U, chat_bg);
 
     if ((chat != NULL) && (chat->turn_count > TIM_CHAT_HISTORY_COUNT))
@@ -596,16 +724,17 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
         char scroll_line[32];
         snprintf(scroll_line, sizeof(scroll_line), "%lu older",
                  (unsigned long)(chat->turn_count - TIM_CHAT_HISTORY_COUNT));
-        DrawText(390U, 38U, (uint8_t*)scroll_line,
+        DrawText(390U, 128U, (uint8_t*)scroll_line,
                  LEFT_MODE, &Font12, 0xFF8090A0U, chat_bg);
     }
 
-    uint32_t y = 66U;
+    uint32_t y = 156U;
     uint8_t drew_turn = 0U;
 
     if (chat != NULL)
     {
-        uint32_t first_turn = (chat->turn_count > 3U) ? 1U : 0U;
+        uint32_t first_turn = (TIM_CHAT_HISTORY_COUNT > 2U) ?
+                              (TIM_CHAT_HISTORY_COUNT - 2U) : 0U;
         for (uint32_t i = first_turn; i < TIM_CHAT_HISTORY_COUNT; i++)
         {
             const TIM_ChatTurn_t *turn = &chat->history[i];
@@ -635,15 +764,15 @@ static void DrawMain(od_pp_out_t *pp, UI_BgArea_t *bg)
             Panel(36U, y + 66U, 350U, 30U, 0xFF102820U, 0xFF207050U);
             DrawText(50U, y + 75U, (uint8_t*)response_line,
                      LEFT_MODE, &Font12, 0xFFB8E8FFU, 0xFF102820U);
-            y += 98U;
+            y += 100U;
             drew_turn = 1U;
         }
     }
 
     if (drew_turn == 0U)
     {
-        Panel(36U, 95U, 350U, 44U, 0xFF102820U, 0xFF207050U);
-        DrawText(50U, 109U, (uint8_t*)"Tap below and type a message.",
+        Panel(36U, 176U, 350U, 44U, 0xFF102820U, 0xFF207050U);
+        DrawText(50U, 190U, (uint8_t*)"Tap below and type a message.",
                  LEFT_MODE, &Font12, 0xFFB8E8FFU, 0xFF102820U);
      }
 
@@ -986,7 +1115,7 @@ static void DrawChatKeyboard(void)
 static void DrawPerfOverlay(void)
 {
     char perf[64];
-    uint32_t npu_total_ms = g_npu_infer_ms + g_embed_npu_ms;
+    uint32_t npu_total_ms = g_npu_infer_ms + g_embed_npu_ms + g_depth_npu_ms;
     uint32_t total_ms = g_cpu_frame_ms + npu_total_ms;
     uint32_t cpu_pct = 0U;
     uint32_t npu_pct = 0U;
@@ -1081,7 +1210,7 @@ AppState_t UI_UpdateState(od_pp_out_t *pp, uint32_t touch_btn)
         break;
 
     case APP_STATE_AUTH_SUCCESS:
-        if ((now - state_entry_time) > 1500U)
+        if ((now - state_entry_time) > 3000U)
         {
             app_state = APP_STATE_MAIN;
             state_entry_time = now;

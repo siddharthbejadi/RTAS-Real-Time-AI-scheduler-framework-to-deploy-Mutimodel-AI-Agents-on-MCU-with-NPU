@@ -61,6 +61,7 @@
  */
 #include "face_store.h"
 #include "face_recog.h"
+#include "app_depth.h"
 
 CLASSES_TABLE;
 
@@ -166,9 +167,12 @@ od_pp_out_t pp_output;
 int32_t  last_recog_idx   = -1;
 float    last_recog_score = 0.0f;
 float    last_det_conf    = 0.0f;
+float    last_depth_match_score = 0.0f;
+uint8_t  last_depth_template_seen = 0U;
 uint32_t g_cpu_frame_ms   = 0U;
 uint32_t g_npu_infer_ms   = 0U;
 extern uint32_t g_embed_npu_ms;
+extern uint32_t g_depth_npu_ms;
 
 /* Enrollment request flags from UI */
 extern volatile uint8_t g_enroll_requested;
@@ -331,6 +335,7 @@ int main(void)
   /* ---------------- Face recognition init ---------------- */
   FaceStore_Init();
   FaceRecog_Init();
+  Depth_Init();
   TIM_AppInit();
 
   /* ---------------- Camera init ---------------- */
@@ -418,7 +423,11 @@ int main(void)
     last_recog_idx = -1;
     last_recog_score = 0.0f;
     last_det_conf = 0.0f;
+    last_depth_match_score = 0.0f;
+    last_depth_template_seen = 0U;
     g_embed_npu_ms = 0U;
+    g_depth_npu_ms = 0U;
+    g_depth_live_score = 0.0f;
 
     int32_t best_idx = -1;
 
@@ -444,6 +453,32 @@ int main(void)
                                  &pp_output.pOutBuff[best],
                                  &last_recog_idx,
                                  &last_recog_score);
+      }
+    }
+
+    if (Depth_IsReady() &&
+        ((best_idx >= 0) || (app_state == APP_STATE_MAIN)))
+    {
+      const od_pp_outBuffer_t *depth_box =
+          (best_idx >= 0) ? &pp_output.pOutBuff[best_idx] : NULL;
+      if (Depth_RunFrame((const uint8_t *)nn_src_u8,
+                         STAI_NETWORK_IN_1_WIDTH,
+                         STAI_NETWORK_IN_1_HEIGHT,
+                         depth_box) &&
+          (last_recog_idx >= 0))
+      {
+        float depth_score = 0.0f;
+        if (FaceStore_DepthScore((uint32_t)last_recog_idx,
+                                 g_depth_preview,
+                                 &depth_score))
+        {
+          last_depth_template_seen = 1U;
+          last_depth_match_score = depth_score;
+          if (depth_score < FACE_DEPTH_MATCH_THRESHOLD)
+          {
+            last_recog_idx = -1;
+          }
+        }
       }
     }
 
@@ -524,7 +559,7 @@ int main(void)
 
     {
       uint32_t frame_elapsed = HAL_GetTick() - frame_cpu_start;
-      uint32_t npu_total_ms = g_npu_infer_ms + g_embed_npu_ms;
+      uint32_t npu_total_ms = g_npu_infer_ms + g_embed_npu_ms + g_depth_npu_ms;
       g_cpu_frame_ms = (frame_elapsed > npu_total_ms) ?
                        (frame_elapsed - npu_total_ms) : frame_elapsed;
     }

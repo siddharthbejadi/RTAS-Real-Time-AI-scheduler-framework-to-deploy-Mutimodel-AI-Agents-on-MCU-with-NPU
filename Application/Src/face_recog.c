@@ -11,6 +11,7 @@
  */
 #include "app_config.h"
 #include "face_recog.h"
+#include "app_depth.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -237,9 +238,13 @@ FaceEnroll_Status_t FaceRecog_EnrollFromFrameEx(const char *name,
         return FACE_ENROLL_ERR_DUPLICATE;
     }
 
-    if (!FaceStore_Add(name, emb, NULL)) {
+    uint32_t saved_index = UINT32_MAX;
+    if (!FaceStore_Add(name, emb, NULL, &saved_index)) {
         printf("[FaceRecog] Enrol: store full\r\n");
         return FACE_ENROLL_ERR_STORE;
+    }
+    if ((saved_index != UINT32_MAX) && (g_depth_preview_ready != 0U)) {
+        (void)FaceStore_SetDepthTemplate(saved_index, g_depth_preview);
     }
     if (!FaceStore_Commit()) {
         return FACE_ENROLL_ERR_COMMIT;

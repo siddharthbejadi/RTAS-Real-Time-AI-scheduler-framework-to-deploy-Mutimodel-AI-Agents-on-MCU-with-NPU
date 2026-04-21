@@ -63,7 +63,7 @@ extern "C" {
 /* ─────────────────────────────────────────────────────────────────────────── */
 /*  Authorized-persons registry                                                */
 /* ─────────────────────────────────────────────────────────────────────────── */
-#define UI_MAX_PERSONS      8u
+#define UI_MAX_PERSONS      5u
 #define UI_MAX_NAME_LEN     20u
 
 typedef struct {

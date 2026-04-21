@@ -61,6 +61,8 @@ C_SOURCES += $(MODEL_DIR)/network_face.c
 C_SOURCES += $(MODEL_DIR)/stai_network_face.c
 C_SOURCES += $(MODEL_DIR)/network_embed.c
 C_SOURCES += $(MODEL_DIR)/stai_network_embed.c
+C_SOURCES += $(MODEL_DIR)/depth.c
+C_SOURCES += $(MODEL_DIR)/stai_depth.c
 C_SOURCES += ${ProjDirPath}/STM32Cube_FW_N6/Drivers/CMSIS/DSP/Include/arm_math.h
 C_SOURCES += ${ProjDirPath}/Middlewares/stm32-vision-models-postprocessing/lib_vision_models_pp/Inc/od_pp_loc.h
 C_SOURCES += ${ProjDirPath}/STM32Cube_FW_N6/Drivers/CMSIS/Device/ST/STM32N6xx/Source/Templates/system_stm32n6xx_fsbl.c
@@ -110,6 +112,7 @@ C_SOURCES += Src/app_touch.c
 C_SOURCES += Src/app_buzzer.c
 C_SOURCES += Src/face_store.c
 C_SOURCES += Src/face_recog.c
+C_SOURCES += Src/app_depth.c
 C_SOURCES += Src/tim_inference.c
 C_SOURCES += Src/tim_tokenizer.c
 C_SOURCES += ${ProjDirPath}/Middlewares/stm32-mw-camera/ISP_Library/isp/Src/isp_algo.c
@@ -303,6 +306,7 @@ flash: $(BUILD_DIR)/$(TARGET)_sign.bin
 flash_weights:
 	$(FLASHER) -c port=SWD mode=HOTPLUG -el $(EL) -hardRst -w $(MODEL_DIR)/network_face_atonbuf.xSPI2.bin 0x71000000
 	$(FLASHER) -c port=SWD mode=HOTPLUG -el $(EL) -hardRst -w $(MODEL_DIR)/network_embed_atonbuf.xSPI2.bin 0x71200000
+	$(FLASHER) -c port=SWD mode=HOTPLUG -el $(EL) -hardRst -w $(MODEL_DIR)/depth_atonbuf.xSPI2.bin 0x71400000
 
 #######################################
 # dependencies

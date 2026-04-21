@@ -21,7 +21,7 @@
 #define USE_DCACHE
 
 /*Defines: CMW_MIRRORFLIP_NONE; CMW_MIRRORFLIP_FLIP; CMW_MIRRORFLIP_MIRROR; CMW_MIRRORFLIP_FLIP_MIRROR;*/
-#define CAMERA_FLIP CMW_MIRRORFLIP_NONE
+#define CAMERA_FLIP CMW_MIRRORFLIP_MIRROR
 
 #define ASPECT_RATIO_CROP       (1)
 #define ASPECT_RATIO_FIT        (2)
@@ -68,5 +68,8 @@
 
 /* Detection confidence required before we even attempt recognition.         */
 #define FACE_RECOG_MIN_DET_CONF       0.60f
+
+/* Depth-template similarity required when an enrolled 224x224 depth map exists. */
+#define FACE_DEPTH_MATCH_THRESHOLD    0.20f
 
 #endif

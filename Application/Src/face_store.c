@@ -3,8 +3,8 @@
  * @file    face_store.c
  * @brief   Persistent face-embedding store in external NOR flash.
  *
- * The working copy lives in PSRAM; FaceStore_Commit() writes the whole blob
- * to a single 64-KB sector of MX66UW1G45G via XSPI2 indirect mode, then
+ * The working copy lives in PSRAM; FaceStore_Commit() writes the blob into
+ * the reserved NOR area via XSPI2 indirect mode, then
  * re-enables memory-mapped mode so the bootloader / model loader keep working.
  ******************************************************************************
  */
@@ -82,7 +82,8 @@ const FaceStore_Record_t* FaceStore_Get(uint32_t index)
 
 bool FaceStore_Add(const char *name,
                    const float *embedding,
-                   const uint8_t *thumb_rgb565_48x48)
+                   const uint8_t *thumb_rgb565_48x48,
+                   uint32_t *out_index)
 {
     /* Find first free slot. */
     uint32_t slot = UINT32_MAX;
@@ -103,6 +104,56 @@ bool FaceStore_Add(const char *name,
 
     /* Keep count = highest active slot + 1 (linear-packed storage). */
     if (slot + 1 > s_blob.count) s_blob.count = slot + 1;
+    if (out_index != NULL) *out_index = slot;
+    return true;
+}
+
+bool FaceStore_SetDepthTemplate(uint32_t index,
+                                const uint8_t *depth_224x224)
+{
+    if ((index >= FACE_STORE_MAX_RECORDS) ||
+        !s_blob.records[index].active ||
+        (depth_224x224 == NULL))
+    {
+        return false;
+    }
+
+    memcpy(s_blob.records[index].depth_template,
+           depth_224x224,
+           FACE_STORE_DEPTH_SIZE);
+    s_blob.records[index].depth_valid = 1U;
+    return true;
+}
+
+bool FaceStore_DepthScore(uint32_t index,
+                          const uint8_t *probe_224x224,
+                          float *out_score)
+{
+    if ((index >= FACE_STORE_MAX_RECORDS) ||
+        !s_blob.records[index].active ||
+        (s_blob.records[index].depth_valid == 0U) ||
+        (probe_224x224 == NULL))
+    {
+        if (out_score != NULL) *out_score = 0.0f;
+        return false;
+    }
+
+    const uint8_t *stored = s_blob.records[index].depth_template;
+    uint32_t sad = 0U;
+
+    for (uint32_t i = 0U; i < FACE_STORE_DEPTH_SIZE; i += 4U)
+    {
+        uint32_t a = probe_224x224[i];
+        uint32_t b = stored[i];
+        sad += (a > b) ? (a - b) : (b - a);
+    }
+
+    float mean_abs_diff = (float)sad / (float)(FACE_STORE_DEPTH_SIZE / 4U);
+    float score = 1.0f - (mean_abs_diff / 96.0f);
+    if (score < 0.0f) score = 0.0f;
+    if (score > 1.0f) score = 1.0f;
+
+    if (out_score != NULL) *out_score = score;
     return true;
 }
 
@@ -188,14 +239,18 @@ bool FaceStore_Commit(void)
     /* Leave memory-mapped mode so we can erase/program. */
     BSP_XSPI_NOR_DisableMemoryMappedMode(0);
 
-    /* Erase the 64 KB sector. MX66UW1G45G supports 4KB / 64KB sector erase. */
-    if (BSP_XSPI_NOR_Erase_Block(0,
-                                 FACE_STORE_FLASH_OFFSET,
-                                 BSP_XSPI_NOR_ERASE_64K) != BSP_ERROR_NONE)
+    /* Erase the reserved store area in 64 KB blocks. */
+    for (uint32_t off = 0U; off < FACE_STORE_FLASH_SIZE; off += (64U * 1024U))
     {
-        printf("[FaceStore] Erase failed\r\n");
-        BSP_XSPI_NOR_EnableMemoryMappedMode(0);
-        return false;
+        if (BSP_XSPI_NOR_Erase_Block(0,
+                                     FACE_STORE_FLASH_OFFSET + off,
+                                     BSP_XSPI_NOR_ERASE_64K) != BSP_ERROR_NONE)
+        {
+            printf("[FaceStore] Erase failed @ +0x%08lX\r\n",
+                   (unsigned long)off);
+            BSP_XSPI_NOR_EnableMemoryMappedMode(0);
+            return false;
+        }
     }
 
     /* Program. BSP write handles page programming internally. */
