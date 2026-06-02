@@ -1,22 +1,5 @@
- /**
- ******************************************************************************
- * @file    cmw_camera_conf.h
- * @author  GPM Application Team
- *
- ******************************************************************************
- * @attention
- *
- * Copyright (c) 2024 STMicroelectronics.
- * All rights reserved.
- *
- * This software is licensed under terms that can be found in the LICENSE file
- * in the root directory of this software component.
- * If no LICENSE file comes with this software, it is provided AS-IS.
- *
- ******************************************************************************
- */
 
-/* Define to prevent recursive inclusion -------------------------------------*/
+
 #ifndef CMW_CAMERA_CONF_H
 #define CMW_CAMERA_CONF_H
 
@@ -24,7 +7,7 @@
 extern "C" {
 #endif
 
-/* Includes ------------------------------------------------------------------*/
+
 #if defined (STM32N657xx)
 #include "stm32n6xx_hal.h"
 #ifdef USE_STM32N6570_NUCLEO_REV_B01
@@ -37,14 +20,10 @@ extern "C" {
 #endif
 
 
-/* ########################## Module Selection ############################## */
-/**
-  * @brief This is the list of modules to be used in the HAL driver
-  */
 #define USE_IMX335_SENSOR
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* CMW_CAMERA_CONF_H */
+#endif

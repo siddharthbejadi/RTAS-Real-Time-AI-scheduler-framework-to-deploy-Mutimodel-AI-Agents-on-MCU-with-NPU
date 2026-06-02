@@ -32,4 +32,4 @@ const char *TIM_ResponseForIntent(int32_t intent_id);
 }
 #endif
 
-#endif /* TIM_INFERENCE_H */
+#endif

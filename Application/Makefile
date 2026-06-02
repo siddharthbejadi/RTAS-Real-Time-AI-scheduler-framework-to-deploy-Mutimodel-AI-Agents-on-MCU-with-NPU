@@ -22,8 +22,19 @@ rwildcard=$(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(su
 ######################################
 # target
 ######################################
-TARGET = Project
-MODEL_DIR = ${ProjDirPath}/Model/STM32N6570-DK
+TARGET = implementing_RTAS-MCU
+MODEL_DIR = ${ProjDirPath}/rtas_model_packages
+MODEL_FACE_DIR = $(MODEL_DIR)/blazeface_detector/generated
+MODEL_EMBED_DIR = $(MODEL_DIR)/mobilefacenet_embedder/generated
+MODEL_DEPTH_DIR = $(MODEL_DIR)/fastdepth_liveness/generated
+HOST_CC ?= gcc
+RTAS_PACKAGE_ROOT = $(MODEL_DIR)
+RTAS_MANIFEST = $(MODEL_DIR)/rtas_models.pbtxt
+RTAS_SCANNER_SOURCE = ${ProjDirPath}/tools/rtas_scan_packages.c
+RTAS_SCANNER_EXE = $(BUILD_TOP)/rtas_scan_packages.exe
+RTAS_CODEGEN_SOURCE = ${ProjDirPath}/tools/rtas_codegen.c
+RTAS_CODEGEN_EXE = $(BUILD_TOP)/rtas_codegen.exe
+RTAS_GENERATED_CONFIG = Inc/rtas_generated_config.h
 BINARY_DIR = Binary
 ifdef APP_GIT_SHA1_STRING
 C_DEFS += -DAPP_GIT_SHA1_STRING=\"$(APP_GIT_SHA1_STRING)\"
@@ -49,20 +60,21 @@ BUILD_DIR = $(BUILD_TOP)/Application/STM32N6570-DK
 ######################################
 # C sources
 C_SOURCES += Src/main.c
-C_SOURCES += Src/syscalls.c
-C_SOURCES += Src/app_fuseprogramming.c
+C_SOURCES += Src/process_orchestration/app_processes.c
+C_SOURCES += Src/platform_system/syscalls.c
+C_SOURCES += Src/platform_system/app_fuseprogramming.c
 C_SOURCES += $(wildcard ${ProjDirPath}/Middlewares/ai-postprocessing-wrapper/*.c)
 C_SOURCES += $(wildcard ${ProjDirPath}/Middlewares/stm32-vision-models-postprocessing/lib_vision_models_pp/Src/*.c)
-C_SOURCES += Src/stm32_lcd_ex.c
-C_SOURCES += Src/stm32n6xx_it.c
+C_SOURCES += Src/platform_system/stm32_lcd_ex.c
+C_SOURCES += Src/platform_system/stm32n6xx_it.c
 C_SOURCES += ${ProjDirPath}/Middlewares/stedgeai-lib/Npu/Devices/STM32N6xx/mcu_cache.c
 C_SOURCES += ${ProjDirPath}/Middlewares/stedgeai-lib/Npu/Devices/STM32N6xx/npu_cache.c
-C_SOURCES += $(MODEL_DIR)/network_face.c
-C_SOURCES += $(MODEL_DIR)/stai_network_face.c
-C_SOURCES += $(MODEL_DIR)/network_embed.c
-C_SOURCES += $(MODEL_DIR)/stai_network_embed.c
-C_SOURCES += $(MODEL_DIR)/depth.c
-C_SOURCES += $(MODEL_DIR)/stai_depth.c
+C_SOURCES += $(MODEL_FACE_DIR)/network_face.c
+C_SOURCES += $(MODEL_FACE_DIR)/stai_network_face.c
+C_SOURCES += $(MODEL_EMBED_DIR)/network_embed.c
+C_SOURCES += $(MODEL_EMBED_DIR)/stai_network_embed.c
+C_SOURCES += $(MODEL_DEPTH_DIR)/depth.c
+C_SOURCES += $(MODEL_DEPTH_DIR)/stai_depth.c
 C_SOURCES += ${ProjDirPath}/STM32Cube_FW_N6/Drivers/CMSIS/DSP/Include/arm_math.h
 C_SOURCES += ${ProjDirPath}/Middlewares/stm32-vision-models-postprocessing/lib_vision_models_pp/Inc/od_pp_loc.h
 C_SOURCES += ${ProjDirPath}/STM32Cube_FW_N6/Drivers/CMSIS/Device/ST/STM32N6xx/Source/Templates/system_stm32n6xx_fsbl.c
@@ -105,16 +117,17 @@ C_SOURCES += ${ProjDirPath}/Middlewares/stm32-mw-camera/sensors/cmw_vd66gy.c
 C_SOURCES += ${ProjDirPath}/Middlewares/stm32-mw-camera/sensors/cmw_imx335.c
 C_SOURCES += ${ProjDirPath}/Middlewares/stm32-mw-camera/sensors/cmw_vd1943.c
 C_SOURCES += ${ProjDirPath}/Middlewares/stm32-mw-camera/sensors/cmw_ov5640.c
-C_SOURCES += Src/crop_img.c
-C_SOURCES += Src/app_camerapipeline.c
-C_SOURCES += Src/app_ui.c
-C_SOURCES += Src/app_touch.c
-C_SOURCES += Src/app_buzzer.c
-C_SOURCES += Src/face_store.c
-C_SOURCES += Src/face_recog.c
-C_SOURCES += Src/app_depth.c
-C_SOURCES += Src/tim_inference.c
-C_SOURCES += Src/tim_tokenizer.c
+C_SOURCES += Src/blazeface_face_detection/crop_img.c
+C_SOURCES += Src/blazeface_face_detection/app_camerapipeline.c
+C_SOURCES += Src/ui_services/app_ui.c
+C_SOURCES += Src/ui_services/app_touch.c
+C_SOURCES += Src/ui_services/app_buzzer.c
+C_SOURCES += Src/mobilefacenet_face_recognition/face_store.c
+C_SOURCES += Src/mobilefacenet_face_recognition/face_recog.c
+C_SOURCES += Src/fastdepth_liveness/app_depth.c
+C_SOURCES += Src/tim_assistant/tim_app.c
+C_SOURCES += Src/tim_assistant/tim_inference.c
+C_SOURCES += Src/tim_assistant/tim_tokenizer.c
 C_SOURCES += ${ProjDirPath}/Middlewares/stm32-mw-camera/ISP_Library/isp/Src/isp_algo.c
 C_SOURCES += ${ProjDirPath}/Middlewares/stm32-mw-camera/ISP_Library/isp/Src/isp_awb_algo.c
 C_SOURCES += ${ProjDirPath}/Middlewares/stm32-mw-camera/ISP_Library/isp/Src/isp_ae_algo.c
@@ -198,7 +211,9 @@ C_INCLUDES += -I${ProjDirPath}/Middlewares/stm32-mw-camera/sensors/vd1943
 C_INCLUDES += -I${ProjDirPath}/Middlewares/stm32-mw-camera/sensors/ov5640
 
 C_INCLUDES += -IInc
-C_INCLUDES += -I$(MODEL_DIR)
+C_INCLUDES += -I$(MODEL_FACE_DIR)
+C_INCLUDES += -I$(MODEL_EMBED_DIR)
+C_INCLUDES += -I$(MODEL_DEPTH_DIR)
 C_INCLUDES += -I${ProjDirPath}/Middlewares/ai-postprocessing-wrapper
 C_INCLUDES += -I${ProjDirPath}/Middlewares/stm32-vision-models-postprocessing/lib_vision_models_pp/Inc
 C_INCLUDES += -I${ProjDirPath}/Middlewares/stedgeai-lib/Npu/ll_aton
@@ -242,8 +257,27 @@ LDFLAGS += -Wl,--no-warn-rwx-segments
 #######################################
 # base build
 #######################################
-.PHONY: all
-all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).bin
+.PHONY: all rtas_scan rtas_codegen
+all: $(RTAS_GENERATED_CONFIG) $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).bin
+
+rtas_scan: $(RTAS_MANIFEST)
+
+rtas_codegen: $(RTAS_GENERATED_CONFIG)
+
+$(RTAS_SCANNER_EXE): $(RTAS_SCANNER_SOURCE) | $(BUILD_TOP)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -o "$@" "$<"
+
+$(RTAS_CODEGEN_EXE): $(RTAS_CODEGEN_SOURCE) | $(BUILD_TOP)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -o "$@" "$<"
+
+.PHONY: rtas_manifest_force
+rtas_manifest_force:
+
+$(RTAS_MANIFEST): rtas_manifest_force $(RTAS_SCANNER_EXE)
+	"$(RTAS_SCANNER_EXE)" --packages "$(RTAS_PACKAGE_ROOT)" --out "$@"
+
+$(RTAS_GENERATED_CONFIG): $(RTAS_MANIFEST) $(RTAS_CODEGEN_EXE)
+	"$(RTAS_CODEGEN_EXE)" --manifest "$(RTAS_MANIFEST)" --out "$@"
 
 .PHONY: sign
 sign: $(BUILD_DIR)/$(TARGET)_sign.hex
@@ -256,7 +290,7 @@ OBJECTS += $(addprefix $(BUILD_DIR)/,$(ASM_SOURCES:.s=.o))
 OBJECTS += $(addprefix $(BUILD_DIR)/,$(ASM_SOURCES_S:.S=.o))
 
 
-$(BUILD_DIR)/%.o: %.c Makefile | $(BUILD_DIR)
+$(BUILD_DIR)/%.o: %.c Makefile $(RTAS_GENERATED_CONFIG) | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	$($(quiet)CC) -c $(CFLAGS) -Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.c=.lst)) $< -o $@
 
@@ -304,9 +338,9 @@ flash: $(BUILD_DIR)/$(TARGET)_sign.bin
 
 .PHONY: flash_weights
 flash_weights:
-	$(FLASHER) -c port=SWD mode=HOTPLUG -el $(EL) -hardRst -w $(MODEL_DIR)/network_face_atonbuf.xSPI2.bin 0x71000000
-	$(FLASHER) -c port=SWD mode=HOTPLUG -el $(EL) -hardRst -w $(MODEL_DIR)/network_embed_atonbuf.xSPI2.bin 0x71200000
-	$(FLASHER) -c port=SWD mode=HOTPLUG -el $(EL) -hardRst -w $(MODEL_DIR)/depth_atonbuf.xSPI2.bin 0x71400000
+	$(FLASHER) -c port=SWD mode=HOTPLUG -el $(EL) -hardRst -w $(MODEL_FACE_DIR)/network_face_atonbuf.xSPI2.bin 0x71000000
+	$(FLASHER) -c port=SWD mode=HOTPLUG -el $(EL) -hardRst -w $(MODEL_EMBED_DIR)/network_embed_atonbuf.xSPI2.bin 0x71200000
+	$(FLASHER) -c port=SWD mode=HOTPLUG -el $(EL) -hardRst -w $(MODEL_DEPTH_DIR)/depth_atonbuf.xSPI2.bin 0x71400000
 
 #######################################
 # dependencies

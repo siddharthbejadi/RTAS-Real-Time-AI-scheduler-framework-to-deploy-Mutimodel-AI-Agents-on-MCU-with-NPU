@@ -1,0 +1,29 @@
+################################################################################
+# RTAS build-time code generation
+################################################################################
+
+.DEFAULT_GOAL := all
+
+HOST_CC ?= gcc
+RTAS_PACKAGE_ROOT := ../../../rtas_model_packages
+RTAS_MANIFEST := ../../../rtas_model_packages/rtas_models.pbtxt
+RTAS_SCANNER_SOURCE := ../../../tools/rtas_scan_packages.c
+RTAS_SCANNER_EXE := rtas_scan_packages.exe
+RTAS_CODEGEN_SOURCE := ../../../tools/rtas_codegen.c
+RTAS_CODEGEN_EXE := rtas_codegen.exe
+RTAS_GENERATED_CONFIG := ../../Inc/rtas_generated_config.h
+
+$(RTAS_SCANNER_EXE): $(RTAS_SCANNER_SOURCE)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -o "$@" "$<"
+
+$(RTAS_CODEGEN_EXE): $(RTAS_CODEGEN_SOURCE)
+	$(HOST_CC) -std=c11 -O2 -Wall -Wextra -o "$@" "$<"
+
+.PHONY: rtas_manifest_force
+rtas_manifest_force:
+
+$(RTAS_MANIFEST): rtas_manifest_force $(RTAS_SCANNER_EXE)
+	./$(RTAS_SCANNER_EXE) --packages "$(RTAS_PACKAGE_ROOT)" --out "$@"
+
+$(RTAS_GENERATED_CONFIG): $(RTAS_MANIFEST) $(RTAS_CODEGEN_EXE)
+	./$(RTAS_CODEGEN_EXE) --manifest "$(RTAS_MANIFEST)" --out "$@"

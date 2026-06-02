@@ -15,4 +15,4 @@ void TIM_Tokenizer_Encode(const char *text, int32_t input_ids[TIM_TOKENIZER_MAX_
 }
 #endif
 
-#endif /* TIM_TOKENIZER_H */
+#endif

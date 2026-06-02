@@ -45,4 +45,4 @@ void TIM_AppSubmitCurrentInput(void);
 }
 #endif
 
-#endif /* TIM_APP_H */
+#endif

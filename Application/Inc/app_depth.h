@@ -29,4 +29,4 @@ bool Depth_RunFrame(const uint8_t *rgb_frame,
 }
 #endif
 
-#endif /* APP_DEPTH_H */
+#endif

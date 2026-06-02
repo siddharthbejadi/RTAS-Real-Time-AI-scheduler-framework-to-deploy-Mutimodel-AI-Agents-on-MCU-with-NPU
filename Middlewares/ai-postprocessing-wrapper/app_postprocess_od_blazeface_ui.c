@@ -21,7 +21,8 @@
 #include "app_config.h"
 #include <assert.h>
 
-#if POSTPROCESS_TYPE == POSTPROCESS_OD_BLAZEFACE_UI
+#if (POSTPROCESS_TYPE == POSTPROCESS_OD_BLAZEFACE_UI) || \
+    (POSTPROCESS_TYPE == POSTPROCESS_OD_BLAZEFACE_UF)
 #include "fd_blazeface_anchors_0.h"
 #include "fd_blazeface_anchors_1.h"
 #ifndef MAX

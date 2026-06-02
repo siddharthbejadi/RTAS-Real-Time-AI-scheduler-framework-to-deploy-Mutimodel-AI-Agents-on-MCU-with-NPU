@@ -1,26 +1,4 @@
-/**
- ******************************************************************************
- * @file    main.c
- * @brief   STM32N6570-DK Face Recognition - merged stable startup version
- *
- * Architecture:
- *   Pipe1 (display)  : camera preview -> LTDC Layer 1
- *   Pipe2 (NN input) : camera snapshot -> BlazeFace -> Face Recognition
- *
- * LTDC layers:
- *   Layer 1 : RGB565 camera background
- *   Layer 2 : ARGB4444 UI overlay
- *
- * Notes:
- *   - Startup path is kept close to the ST reference example for stability.
- *   - Risky direct MEMSYSCTL cache register pokes have been removed.
- *   - Full security/slave attribute configuration has been restored.
- *   - Full sleep clock configuration has been restored.
- *   - Camera display pipe is started again.
- *   - NN input capture uses a uint8 staging buffer, then normalizes into nn_in.
- *
- ******************************************************************************
- */
+
 
 #include <string.h>
 #include <unistd.h>
@@ -40,10 +18,10 @@
 
 #include "app_fuseprogramming.h"
 #include "app_postprocess.h"
+#include "app_processes.h"
 #include "app_camerapipeline.h"
 #include "app_config.h"
 #include "main.h"
-#include "crop_img.h"
 #include "stlogo.h"
 
 #include "stai.h"
@@ -52,22 +30,9 @@
 #include "app_ui.h"
 #include "app_touch.h"
 #include "app_buzzer.h"
-#include "tim_app.h"
-
-/*
- * Keep these includes aligned with the modules you actually have in the project.
- * If your project uses face_store.h / face_recog.h instead of app_facerec.h,
- * keep those versions and adapt the marked blocks below.
- */
-#include "face_store.h"
-#include "face_recog.h"
-#include "app_depth.h"
 
 CLASSES_TABLE;
 
-/* -------------------------------------------------------------------------- */
-/* Version strings                                                            */
-/* -------------------------------------------------------------------------- */
 
 #ifndef APP_GIT_SHA1_STRING
 #define APP_GIT_SHA1_STRING "dev"
@@ -77,9 +42,6 @@ CLASSES_TABLE;
 #define APP_VERSION_STRING "unversioned"
 #endif
 
-/* -------------------------------------------------------------------------- */
-/* Display configuration                                                      */
-/* -------------------------------------------------------------------------- */
 
 #define LCD_FG_WIDTH   SCREEN_WIDTH
 #define LCD_FG_HEIGHT  SCREEN_HEIGHT
@@ -90,6 +52,8 @@ CLASSES_TABLE;
 #define LCD_PREVIEW_X0      (SCREEN_WIDTH - LCD_PREVIEW_WIDTH)
 #define LCD_PREVIEW_Y0      0U
 #define LCD_PREVIEW_FRAMEBUFFER_SIZE  (LCD_PREVIEW_WIDTH * LCD_PREVIEW_HEIGHT * 2U)
+#define LCD_UI_UPDATE_PERIOD_MS       100U
+#define LCD_PREVIEW_UPDATE_PERIOD_MS  120U
 
 typedef struct
 {
@@ -110,7 +74,7 @@ volatile uintptr_t g_nn_input_addr = 0U;
 volatile uintptr_t g_nn_output0_addr = 0U;
 volatile uint32_t g_nn_input_count = 0U;
 volatile uint32_t g_nn_output_count = 0U;
-/* Camera preview area */
+
 Rectangle_TypeDef lcd_bg_area = {
   .X0 = 0U,
   .Y0 = 0U,
@@ -118,7 +82,7 @@ Rectangle_TypeDef lcd_bg_area = {
   .YSize = 0U,
 };
 
-/* Full-screen UI overlay area */
+
 Rectangle_TypeDef lcd_fg_area = {
   .X0 = 0U,
   .Y0 = 0U,
@@ -140,97 +104,12 @@ const uint32_t colors[NUMBER_COLORS] = {
     UTIL_LCD_COLOR_ORANGE
 };
 
-/* -------------------------------------------------------------------------- */
-/* Post-processing                                                            */
-/* -------------------------------------------------------------------------- */
-
-#if POSTPROCESS_TYPE == POSTPROCESS_OD_BLAZEFACE_UI
-  od_blazeface_pp_static_param_t pp_params;
-#elif POSTPROCESS_TYPE == POSTPROCESS_OD_BLAZEFACE_UF
-  od_blazeface_pp_static_param_t pp_params;
-#else
-  #error "Only BlazeFace postprocessing is supported in this project"
-#endif
-
-/* -------------------------------------------------------------------------- */
-/* Globals                                                                    */
-/* -------------------------------------------------------------------------- */
 
 UART_HandleTypeDef huart1;
 volatile int32_t cameraFrameReceived = 0;
 
-stai_ptr nn_in;                          /* Network input buffer from STAI */
 BSP_LCD_LayerConfig_t LayerConfig = {0};
-od_pp_out_t pp_output;
 
-/* Shared recognition result for UI */
-int32_t  last_recog_idx   = -1;
-float    last_recog_score = 0.0f;
-float    last_det_conf    = 0.0f;
-float    last_depth_match_score = 0.0f;
-uint8_t  last_depth_template_seen = 0U;
-uint32_t g_cpu_frame_ms   = 0U;
-uint32_t g_npu_infer_ms   = 0U;
-extern uint32_t g_embed_npu_ms;
-extern uint32_t g_depth_npu_ms;
-
-/* Enrollment request flags from UI */
-extern volatile uint8_t g_enroll_requested;
-extern volatile uint8_t g_enroll_done_flag;
-extern volatile uint8_t g_enroll_fail_flag;
-extern volatile uint8_t g_enroll_duplicate_flag;
-extern char g_enroll_name[FACE_STORE_NAME_LEN];
-static uint32_t enroll_toast_ts = 0U;
-
-/* -------------------------------------------------------------------------- */
-/* NN input staging buffer                                                    */
-/* -------------------------------------------------------------------------- */
-
-/*
- * Capture pipe writes uint8 RGB pixels into a staging buffer.
- * Then CPU normalizes into nn_in if the model input is float32.
- *
- * Important:
- * - This assumes your BlazeFace model expects float32 normalized input.
- * - If your deployed model is uint8 / int8, REMOVE the normalization block
- *   and feed the buffer format expected by the generated model.
- */
-
-#define ALIGN_TO_16(value) (((value) + 15U) & ~15U)
-
-#define NN_U8_SIZE \
-  (STAI_NETWORK_IN_1_WIDTH * STAI_NETWORK_IN_1_HEIGHT * STAI_NETWORK_IN_1_CHANNEL)
-
-#define NN_U8_SIZE_PADDED  ((NN_U8_SIZE + 31U) & ~31U)
-
-/*
- * DCMIPP may pad each line to a multiple-of-16 pixel rule depending on config.
- * Reserve a staging region large enough for the raw NN snapshot path.
- */
-#define DCMIPP_OUT_NN_LEN \
-  (ALIGN_TO_16(STAI_NETWORK_IN_1_WIDTH * STAI_NETWORK_IN_1_CHANNEL) * STAI_NETWORK_IN_1_HEIGHT)
-
-#define DCMIPP_OUT_NN_BUFF_LEN ((DCMIPP_OUT_NN_LEN + 31U) & ~31U)
-
-__attribute__((aligned(32)))
-static uint8_t nn_in_u8[DCMIPP_OUT_NN_BUFF_LEN];
-
-/*
- * Optional separate crop buffer. This avoids in-place crop corruption risk
- * if img_crop() is not guaranteed to be safe with src == dst.
- */
-__attribute__((aligned(32)))
-static uint8_t nn_crop_u8[NN_U8_SIZE_PADDED];
-
-/* -------------------------------------------------------------------------- */
-/* Network context                                                            */
-/* -------------------------------------------------------------------------- */
-
-STAI_NETWORK_CONTEXT_DECLARE(network_context, STAI_NETWORK_CONTEXT_SIZE)
-
-/* -------------------------------------------------------------------------- */
-/* LCD framebuffers                                                           */
-/* -------------------------------------------------------------------------- */
 
 __attribute__((section(".psram_bss")))
 __attribute__((aligned(32)))
@@ -244,8 +123,10 @@ __attribute__((section(".psram_bss")))
 __attribute__((aligned(32)))
 static uint8_t lcd_fg_buffer[2][LCD_FG_WIDTH * LCD_FG_HEIGHT * 2U];
 
-static int lcd_fg_buffer_rd_idx = 0;
+static int lcd_fg_buffer_rd_idx = 1;
 static int lcd_preview_buffer_rd_idx = 0;
+static uint32_t lcd_ui_last_update_ms = 0U;
+static uint32_t lcd_preview_last_update_ms = 0U;
 
 typedef enum
 {
@@ -254,10 +135,6 @@ typedef enum
 } DisplayLayout_t;
 
 static DisplayLayout_t display_layout = DISPLAY_LAYOUT_FULLSCREEN;
-
-/* -------------------------------------------------------------------------- */
-/* Forward declarations                                                       */
-/* -------------------------------------------------------------------------- */
 
 static void SystemClock_Config(void);
 static void CONSOLE_Config(void);
@@ -271,16 +148,7 @@ static void Security_Config(void);
 static void set_clk_sleep_mode(void);
 static void IAC_Config(void);
 static void Hardware_init(void);
-static void Run_Inference(stai_network *network_instance);
-static void NeuralNetwork_init(uint32_t *nn_in_length,
-                               stai_ptr *nn_out,
-                               stai_size *number_output,
-                               int32_t nn_out_len[],
-                               stai_network_info *nn_info);
 
-/* -------------------------------------------------------------------------- */
-/* Main                                                                       */
-/* -------------------------------------------------------------------------- */
 
 int main(void)
 {
@@ -288,7 +156,7 @@ int main(void)
 
   printf("H1: hardware init done\r\n");
   printf("========================================\n");
-  printf("STM32N6 Face Recognition %s (%s)\n", APP_VERSION_STRING, APP_GIT_SHA1_STRING);
+  printf("implementing RTAS-MCU %s (%s)\n", APP_VERSION_STRING, APP_GIT_SHA1_STRING);
   printf("Build date & time: %s %s\n", __DATE__, __TIME__);
 #if defined(__GNUC__)
   printf("Compiler: GCC %d.%d.%d\n", __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__);
@@ -308,282 +176,36 @@ int main(void)
   printf("NN model: %s\n", STAI_NETWORK_ORIGIN_MODEL_NAME);
   printf("========================================\n");
 
-  /* ---------------- NN init ---------------- */
-  uint32_t pitch_nn = 0U;
-  uint32_t nn_in_len = 0U;
-  stai_size number_output = 0U;
-  stai_ptr nn_out[STAI_NETWORK_OUT_NUM] = {0};
-  int32_t nn_out_len[STAI_NETWORK_OUT_NUM] = {0};
-  stai_network_info info;
-  int ret = 0;
 
-  printf("H2: starting NeuralNetwork_init\r\n");
-  NeuralNetwork_init(&nn_in_len, nn_out, &number_output, nn_out_len, &info);
-  printf("H3: NeuralNetwork_init done, nn_in=%p len=%lu outputs=%lu out0=%p\r\n",
-         nn_in,
-         nn_in_len,
-         (uint32_t)number_output,
-         (number_output > 0U) ? nn_out[0] : NULL);
-
-  /* ---------------- Postprocess init ---------------- */
-  printf("H4: app_postprocess_init inputs=%lu outputs=%lu\r\n",
-         (uint32_t)info.n_inputs,
-         (uint32_t)info.n_outputs);
-  app_postprocess_init(&pp_params, &info);
-  printf("H5: postprocess init done\r\n");
-
-  /* ---------------- Face recognition init ---------------- */
-  FaceStore_Init();
-  FaceRecog_Init();
-  Depth_Init();
-  TIM_AppInit();
-
-  /* ---------------- Camera init ---------------- */
-  CameraPipeline_Init(&lcd_bg_area.XSize, &lcd_bg_area.YSize, &pitch_nn);
+  AppProcesses_Init(&lcd_bg_area.XSize, &lcd_bg_area.YSize);
 
   LCD_init();
   UI_Init();
   Touch_Init();
   Buzzer_Init();
 
-  /* Restore stable camera preview startup */
+
   CameraPipeline_DisplayPipe_Start(lcd_bg_buffer, CMW_MODE_CONTINUOUS);
 
   printf("Camera preview started. BG area: %lux%lu, NN pitch=%lu\n",
-         lcd_bg_area.XSize, lcd_bg_area.YSize, pitch_nn);
+         lcd_bg_area.XSize, lcd_bg_area.YSize, AppProcesses_GetNnPitch());
 
-  /* ---------------- Main loop ---------------- */
+  /* Cooperative process-oriented loop:
+   * P1 camera frame -> P2 model scheduler -> P3 auth decision -> P4 UI/services.
+   */
   while (1)
   {
-    TIM_AppPoll();
-    CameraPipeline_IspUpdate();
-
-    /* Snapshot into uint8 staging buffer */
-    CameraPipeline_NNPipe_Start(nn_in_u8, CMW_MODE_SNAPSHOT);
-
-    while (cameraFrameReceived == 0)
-    {
-      /* wait */
-    }
-    cameraFrameReceived = 0;
-
-    uint32_t ts[2] = {0U, 0U};
-    uint32_t frame_cpu_start = HAL_GetTick();
-
-    /* Ensure CPU sees the fresh DCMIPP-written buffer */
-    SCB_InvalidateDCache_by_Addr((void *)nn_in_u8, DCMIPP_OUT_NN_BUFF_LEN);
-
-    /*
-     * If DCMIPP row pitch differs from exact NN row width, crop/pack into a
-     * contiguous buffer before normalization.
-     */
-    uint8_t *nn_src_u8 = nn_in_u8;
-
-    if (pitch_nn != (STAI_NETWORK_IN_1_WIDTH * STAI_NETWORK_IN_1_CHANNEL))
-    {
-      memset(nn_crop_u8, 0, sizeof(nn_crop_u8));
-      img_crop(nn_in_u8,
-               nn_crop_u8,
-               pitch_nn,
-               STAI_NETWORK_IN_1_WIDTH,
-               STAI_NETWORK_IN_1_HEIGHT,
-               STAI_NETWORK_IN_1_CHANNEL);
-
-      SCB_CleanInvalidateDCache_by_Addr((void *)nn_crop_u8, NN_U8_SIZE_PADDED);
-      nn_src_u8 = nn_crop_u8;
-    }
-
-    /*
-     * Normalize uint8 [0..255] -> float32 [-1, 1]
-     * Keep this only if your generated model input really is float32.
-     */
-    {
-      float *dst = (float *)nn_in;
-      const uint32_t n = NN_U8_SIZE;
-
-      memset((void *)nn_in, 0, nn_in_len);
-
-      for (uint32_t i = 0U; i < n; i++)
-      {
-        dst[i] = ((float)nn_src_u8[i] * (1.0f / 127.5f)) - 1.0f;
-      }
-    }
-
-    SCB_CleanInvalidateDCache_by_Addr((void *)nn_in, nn_in_len);
-
-    ts[0] = HAL_GetTick();
-    Run_Inference(network_context);
-    ts[1] = HAL_GetTick();
-    g_npu_infer_ms = ts[1] - ts[0];
-
-    ret = app_postprocess_run((void **)nn_out, number_output, &pp_output, &pp_params);
-    assert(ret == 0);
-
-    /* ---------------- Recognition stage ---------------- */
-    last_recog_idx = -1;
-    last_recog_score = 0.0f;
-    last_det_conf = 0.0f;
-    last_depth_match_score = 0.0f;
-    last_depth_template_seen = 0U;
-    g_embed_npu_ms = 0U;
-    g_depth_npu_ms = 0U;
-    g_depth_live_score = 0.0f;
-
-    int32_t best_idx = -1;
-
-    if (pp_output.nb_detect >= 1U)
-    {
-      uint32_t best = 0U;
-      for (uint32_t i = 1U; i < pp_output.nb_detect; i++)
-      {
-        if (pp_output.pOutBuff[i].conf > pp_output.pOutBuff[best].conf)
-        {
-          best = i;
-        }
-      }
-
-      best_idx = (int32_t)best;
-      last_det_conf = pp_output.pOutBuff[best].conf;
-
-      if ((last_det_conf >= FACE_RECOG_MIN_DET_CONF) && FaceRecog_IsReady())
-      {
-        (void)FaceRecog_Identify((const uint8_t *)nn_src_u8,
-                                 STAI_NETWORK_IN_1_WIDTH,
-                                 STAI_NETWORK_IN_1_HEIGHT,
-                                 &pp_output.pOutBuff[best],
-                                 &last_recog_idx,
-                                 &last_recog_score);
-      }
-    }
-
-    if (Depth_IsReady() &&
-        ((best_idx >= 0) || (app_state == APP_STATE_MAIN)))
-    {
-      const od_pp_outBuffer_t *depth_box =
-          (best_idx >= 0) ? &pp_output.pOutBuff[best_idx] : NULL;
-      if (Depth_RunFrame((const uint8_t *)nn_src_u8,
-                         STAI_NETWORK_IN_1_WIDTH,
-                         STAI_NETWORK_IN_1_HEIGHT,
-                         depth_box) &&
-          (last_recog_idx >= 0))
-      {
-        float depth_score = 0.0f;
-        if (FaceStore_DepthScore((uint32_t)last_recog_idx,
-                                 g_depth_preview,
-                                 &depth_score))
-        {
-          last_depth_template_seen = 1U;
-          last_depth_match_score = depth_score;
-          if (depth_score < FACE_DEPTH_MATCH_THRESHOLD)
-          {
-            last_recog_idx = -1;
-          }
-        }
-      }
-    }
-
-    /* ---------------- Enrollment stage ---------------- */
-    if (g_enroll_requested)
-    {
-      g_enroll_requested = 0U;
-      g_enroll_done_flag = 0U;
-      g_enroll_fail_flag = 0U;
-      g_enroll_duplicate_flag = 0U;
-
-      if ((best_idx >= 0) &&
-          (last_det_conf >= FACE_RECOG_MIN_DET_CONF) &&
-          FaceRecog_IsReady())
-      {
-        char default_name[FACE_STORE_NAME_LEN];
-        snprintf(default_name,
-                 sizeof(default_name),
-                 "Person %lu",
-                 (unsigned long)(FaceStore_Count() + 1U));
-        if (g_enroll_name[0] != '\0')
-        {
-          strncpy(default_name, g_enroll_name, sizeof(default_name) - 1U);
-          default_name[sizeof(default_name) - 1U] = '\0';
-          g_enroll_name[0] = '\0';
-        }
-
-        uint32_t matched_index = UINT32_MAX;
-        float matched_score = 0.0f;
-        FaceEnroll_Status_t enroll_status =
-            FaceRecog_EnrollFromFrameEx(default_name,
-                                        (const uint8_t *)nn_src_u8,
-                                        STAI_NETWORK_IN_1_WIDTH,
-                                        STAI_NETWORK_IN_1_HEIGHT,
-                                        &pp_output.pOutBuff[best_idx],
-                                        &matched_index,
-                                        &matched_score);
-
-        if (enroll_status == FACE_ENROLL_OK)
-        {
-          g_enroll_done_flag = 1U;
-          enroll_toast_ts = HAL_GetTick();
-          printf("[Enroll] saved '%s' (total=%lu)\r\n",
-                 default_name,
-                 (unsigned long)FaceStore_Count());
-        }
-        else if (enroll_status == FACE_ENROLL_ERR_DUPLICATE)
-        {
-          g_enroll_duplicate_flag = 1U;
-          enroll_toast_ts = HAL_GetTick();
-          printf("[Enroll] duplicate face, matched index=%lu score=%.3f\r\n",
-                 (unsigned long)matched_index,
-                 matched_score);
-        }
-        else
-        {
-          g_enroll_fail_flag = 1U;
-          enroll_toast_ts = HAL_GetTick();
-          printf("[Enroll] failed during save\r\n");
-        }
-      }
-      else
-      {
-        g_enroll_name[0] = '\0';
-        g_enroll_fail_flag = 1U;
-        enroll_toast_ts = HAL_GetTick();
-        printf("[Enroll] failed: no suitable face or recognizer not ready\r\n");
-      }
-    }
-
-    if ((g_enroll_done_flag || g_enroll_fail_flag || g_enroll_duplicate_flag) &&
-        ((HAL_GetTick() - enroll_toast_ts) > 2000U))
-    {
-      g_enroll_done_flag = 0U;
-      g_enroll_fail_flag = 0U;
-      g_enroll_duplicate_flag = 0U;
-    }
-
-    {
-      uint32_t frame_elapsed = HAL_GetTick() - frame_cpu_start;
-      uint32_t npu_total_ms = g_npu_infer_ms + g_embed_npu_ms + g_depth_npu_ms;
-      g_cpu_frame_ms = (frame_elapsed > npu_total_ms) ?
-                       (frame_elapsed - npu_total_ms) : frame_elapsed;
-    }
-
-    Display_NetworkOutput(&pp_output, g_npu_infer_ms);
-
-    /*
-     * Invalidate network outputs after use, so next inference/postprocess
-     * sees fresh values.
-     */
-    for (int i = 0; i < (int)number_output; i++)
-    {
-      SCB_InvalidateDCache_by_Addr((void *)nn_out[i], nn_out_len[i]);
-    }
+    CameraFrame_Process();
+    ModelScheduler_Process();
+    AuthDecision_Process();
+    UiSystem_Process();
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* Hardware init                                                              */
-/* -------------------------------------------------------------------------- */
 
 static void Hardware_init(void)
 {
-  /* Return temporarily to safe HSI sources before re-clocking */
+
   __HAL_RCC_CPUCLK_CONFIG(RCC_CPUCLKSOURCE_HSI);
   __HAL_RCC_SYSCLK_CONFIG(RCC_SYSCLKSOURCE_HSI);
 
@@ -602,11 +224,11 @@ static void Hardware_init(void)
   Fuse_Programming();
   NPUCache_config();
 
-  /* External PSRAM */
+
   BSP_XSPI_RAM_Init(0);
   BSP_XSPI_RAM_EnableMemoryMappedMode(0);
 
-  /* External NOR */
+
   BSP_XSPI_NOR_Init_t NOR_Init;
   NOR_Init.InterfaceMode = BSP_XSPI_NOR_OPI_MODE;
   NOR_Init.TransferRate  = BSP_XSPI_NOR_DTR_TRANSFER;
@@ -619,139 +241,6 @@ static void Hardware_init(void)
   set_clk_sleep_mode();
 }
 
-/* -------------------------------------------------------------------------- */
-/* Inference                                                                  */
-/* -------------------------------------------------------------------------- */
-
-static void Run_Inference(stai_network *network_instance)
-{
-  stai_return_code ret;
-
-  do
-  {
-    ret = stai_network_run(network_instance, STAI_MODE_ASYNC);
-    if (ret == STAI_RUNNING_WFE)
-    {
-      LL_ATON_OSAL_WFE();
-    }
-  } while ((ret == STAI_RUNNING_WFE) || (ret == STAI_RUNNING_NO_WFE));
-
-  ret = stai_ext_network_new_inference(network_instance);
-  assert(ret == STAI_SUCCESS);
-}
-
-static void NeuralNetwork_init(uint32_t *nn_in_length,
-                               stai_ptr *nn_out,
-                               stai_size *number_output,
-                               int32_t nn_out_len[],
-                               stai_network_info *nn_info)
-{
-  stai_network_info info;
-  stai_size n_inputs = STAI_NETWORK_IN_NUM;
-  stai_size n_outputs = STAI_NETWORK_OUT_NUM;
-  int ret;
-
-  g_nn_step = 10U;
-  g_nn_context_addr = (uintptr_t)network_context;
-  printf("NN10: stai_runtime_init\r\n");
-  ret = stai_runtime_init();
-  g_nn_ret = ret;
-  printf("NN11: stai_runtime_init ret=%d\r\n", ret);
-  if (ret != STAI_SUCCESS)
-  {
-    while (1)
-    {
-    }
-  }
-
-  g_nn_step = 20U;
-  printf("NN20: stai_network_init ctx=%p\r\n", network_context);
-  ret = stai_network_init(network_context);
-  g_nn_ret = ret;
-  printf("NN21: stai_network_init ret=%d\r\n", ret);
-  if (ret != STAI_SUCCESS)
-  {
-    while (1)
-    {
-    }
-  }
-
-  g_nn_step = 30U;
-  printf("NN30: stai_network_get_info\r\n");
-  ret = stai_network_get_info(network_context, &info);
-  g_nn_ret = ret;
-  printf("NN31: stai_network_get_info ret=%d inputs=%lu outputs=%lu info.inputs=%p info.outputs=%p\r\n",
-         ret,
-         (uint32_t)info.n_inputs,
-         (uint32_t)info.n_outputs,
-         info.inputs,
-         info.outputs);
-  if ((ret != STAI_SUCCESS) || (info.n_inputs == 0U) || (info.inputs == NULL) ||
-      (info.n_outputs == 0U) || (info.outputs == NULL) || (nn_info == NULL))
-  {
-    while (1)
-    {
-    }
-  }
-
-  g_nn_step = 40U;
-  *number_output = n_outputs;
-  *nn_in_length = info.inputs[0].size_bytes;
-  printf("NN40: input bytes=%lu, expected inputs=%lu outputs=%lu\r\n",
-         *nn_in_length,
-         (uint32_t)n_inputs,
-         (uint32_t)n_outputs);
-
-  g_nn_step = 50U;
-  printf("NN50: stai_network_get_inputs\r\n");
-  ret = stai_network_get_inputs(network_context, &nn_in, &n_inputs);
-  g_nn_ret = ret;
-  g_nn_input_addr = (uintptr_t)nn_in;
-  g_nn_input_count = (uint32_t)n_inputs;
-  printf("NN51: stai_network_get_inputs ret=%d n_inputs=%lu nn_in=%p\r\n",
-         ret,
-         (uint32_t)n_inputs,
-         nn_in);
-  if ((ret != STAI_SUCCESS) || (n_inputs == 0U) || (nn_in == NULL))
-  {
-    while (1)
-    {
-    }
-  }
-
-  g_nn_step = 60U;
-  printf("NN60: stai_network_get_outputs\r\n");
-  ret = stai_network_get_outputs(network_context, nn_out, &n_outputs);
-  g_nn_ret = ret;
-  g_nn_output_count = (uint32_t)n_outputs;
-  g_nn_output0_addr = (n_outputs > 0U) ? (uintptr_t)nn_out[0] : 0U;
-  printf("NN61: stai_network_get_outputs ret=%d n_outputs=%lu out0=%p\r\n",
-         ret,
-         (uint32_t)n_outputs,
-         (n_outputs > 0U) ? nn_out[0] : NULL);
-  if ((ret != STAI_SUCCESS) || (n_outputs == 0U) || (nn_out[0] == NULL))
-  {
-    while (1)
-    {
-    }
-  }
-
-  *number_output = n_outputs;
-
-  for (int i = 0; i < (int)(*number_output); i++)
-  {
-    nn_out_len[i] = info.outputs[i].size_bytes;
-  }
-
-  *nn_info = info;
-
-  g_nn_step = 70U;
-  printf("NN70: NeuralNetwork_init complete\r\n");
-}
-
-/* -------------------------------------------------------------------------- */
-/* NPU RAM / Cache                                                            */
-/* -------------------------------------------------------------------------- */
 
 static void NPURam_enable(void)
 {
@@ -785,9 +274,6 @@ static void NPUCache_config(void)
   npu_cache_enable();
 }
 
-/* -------------------------------------------------------------------------- */
-/* Security / IAC                                                             */
-/* -------------------------------------------------------------------------- */
 
 static void Security_Config(void)
 {
@@ -823,13 +309,10 @@ void IAC_IRQHandler(void)
 {
   while (1)
   {
-    /* Illegal access trap */
+
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* Sleep mode clock configuration                                             */
-/* -------------------------------------------------------------------------- */
 
 static void set_clk_sleep_mode(void)
 {
@@ -851,24 +334,13 @@ static void set_clk_sleep_mode(void)
   __HAL_RCC_AXISRAM6_MEM_CLK_SLEEP_ENABLE();
 }
 
-/* -------------------------------------------------------------------------- */
-/* Display/UI                                                                 */
-/* -------------------------------------------------------------------------- */
 
 static void Display_NetworkOutput(od_pp_out_t *p_postprocess, uint32_t inference_ms)
 {
   int ret;
-
-  ret = HAL_LTDC_SetAddress_NoReload(&hlcd_ltdc,
-                                     (uint32_t)lcd_fg_buffer[lcd_fg_buffer_rd_idx],
-                                     LTDC_LAYER_2);
-  assert(ret == HAL_OK);
-
-  UTIL_LCD_FillRect(lcd_fg_area.X0,
-                    lcd_fg_area.Y0,
-                    lcd_fg_area.XSize,
-                    lcd_fg_area.YSize,
-                    0x00000000u);
+  uint32_t now = HAL_GetTick();
+  bool throttle_ui;
+  bool render_due;
 
   TouchButton_t touch = Touch_GetButton(app_state);
 
@@ -907,16 +379,44 @@ static void Display_NetworkOutput(od_pp_out_t *p_postprocess, uint32_t inference
 
   Buzzer_Update();
 
-  /*
-   * Assumes your UI layer reads:
-   *   - app_state
-   *   - last_recog_idx / last_recog_score / last_det_conf
-   * If your UI_Render signature differs, adapt here.
-   */
+  throttle_ui = (app_state == APP_STATE_MAIN) ||
+                (app_state == APP_STATE_CHAT_KEYBOARD) ||
+                (app_state == APP_STATE_SETTINGS) ||
+                (app_state == APP_STATE_ENROLL_NAME) ||
+                (app_state == APP_STATE_AUTH_SUCCESS);
+
+  render_due = (app_state != prev_state) ||
+               !throttle_ui ||
+               (lcd_ui_last_update_ms == 0U) ||
+               ((now - lcd_ui_last_update_ms) >= LCD_UI_UPDATE_PERIOD_MS);
+
+  if (!render_due)
+  {
+    return;
+  }
+
+  lcd_ui_last_update_ms = now;
+
+  ret = HAL_LTDC_SetAddress_NoReload(&hlcd_ltdc,
+                                     (uint32_t)lcd_fg_buffer[lcd_fg_buffer_rd_idx],
+                                     LTDC_LAYER_2);
+  assert(ret == HAL_OK);
+
+  UTIL_LCD_FillRect(lcd_fg_area.X0,
+                    lcd_fg_area.Y0,
+                    lcd_fg_area.XSize,
+                    lcd_fg_area.YSize,
+                    0x00000000u);
+
   (void)inference_ms;
   if ((app_state == APP_STATE_MAIN) || (app_state == APP_STATE_CHAT_KEYBOARD))
   {
-    Display_UpdateMainPreview();
+    if ((lcd_preview_last_update_ms == 0U) ||
+        ((now - lcd_preview_last_update_ms) >= LCD_PREVIEW_UPDATE_PERIOD_MS))
+    {
+      Display_UpdateMainPreview();
+      lcd_preview_last_update_ms = now;
+    }
   }
 
   UI_Render(p_postprocess, (UI_BgArea_t *)&lcd_bg_area);
@@ -930,6 +430,11 @@ static void Display_NetworkOutput(od_pp_out_t *p_postprocess, uint32_t inference
   assert(ret == HAL_OK);
 
   lcd_fg_buffer_rd_idx = 1 - lcd_fg_buffer_rd_idx;
+}
+
+void AppProcesses_RenderOutput(od_pp_out_t *p_postprocess, uint32_t inference_ms)
+{
+  Display_NetworkOutput(p_postprocess, inference_ms);
 }
 
 static void Display_SetLayout(DisplayLayout_t layout)
@@ -1037,7 +542,7 @@ static void LCD_init(void)
 {
   BSP_LCD_Init(0, LCD_ORIENTATION_LANDSCAPE);
 
-  /* Layer 1: camera preview */
+
   LayerConfig.X0          = lcd_bg_area.X0;
   LayerConfig.Y0          = lcd_bg_area.Y0;
   LayerConfig.X1          = lcd_bg_area.X0 + lcd_bg_area.XSize;
@@ -1046,7 +551,7 @@ static void LCD_init(void)
   LayerConfig.Address     = (uint32_t)lcd_bg_buffer;
   BSP_LCD_ConfigLayer(0, LTDC_LAYER_1, &LayerConfig);
 
-  /* Layer 2: transparent UI overlay */
+
   LayerConfig.X0          = lcd_fg_area.X0;
   LayerConfig.Y0          = lcd_fg_area.Y0;
   LayerConfig.X1          = lcd_fg_area.X0 + lcd_fg_area.XSize;
@@ -1062,9 +567,6 @@ static void LCD_init(void)
   UTIL_LCD_SetTextColor(UTIL_LCD_COLOR_WHITE);
 }
 
-/* -------------------------------------------------------------------------- */
-/* DCMIPP clock                                                               */
-/* -------------------------------------------------------------------------- */
 
 HAL_StatusTypeDef MX_DCMIPP_ClockConfig(DCMIPP_HandleTypeDef *hdcmipp)
 {
@@ -1091,9 +593,6 @@ HAL_StatusTypeDef MX_DCMIPP_ClockConfig(DCMIPP_HandleTypeDef *hdcmipp)
   return ret;
 }
 
-/* -------------------------------------------------------------------------- */
-/* System clocks                                                              */
-/* -------------------------------------------------------------------------- */
 
 static void SystemClock_Config(void)
 {
@@ -1105,7 +604,7 @@ static void SystemClock_Config(void)
 
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_NONE;
 
-  /* PLL1 = 800 MHz */
+
   RCC_OscInitStruct.PLL1.PLLState      = RCC_PLL_ON;
   RCC_OscInitStruct.PLL1.PLLSource     = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL1.PLLM          = 2;
@@ -1114,7 +613,7 @@ static void SystemClock_Config(void)
   RCC_OscInitStruct.PLL1.PLLP1         = 1;
   RCC_OscInitStruct.PLL1.PLLP2         = 1;
 
-  /* PLL2 = 1000 MHz */
+
   RCC_OscInitStruct.PLL2.PLLState      = RCC_PLL_ON;
   RCC_OscInitStruct.PLL2.PLLSource     = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL2.PLLM          = 8;
@@ -1123,7 +622,7 @@ static void SystemClock_Config(void)
   RCC_OscInitStruct.PLL2.PLLP1         = 1;
   RCC_OscInitStruct.PLL2.PLLP2         = 1;
 
-  /* PLL3 = 900 MHz */
+
   RCC_OscInitStruct.PLL3.PLLState      = RCC_PLL_ON;
   RCC_OscInitStruct.PLL3.PLLSource     = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL3.PLLM          = 8;
@@ -1132,7 +631,7 @@ static void SystemClock_Config(void)
   RCC_OscInitStruct.PLL3.PLLP1         = 1;
   RCC_OscInitStruct.PLL3.PLLP2         = 2;
 
-  /* PLL4 = 50 MHz */
+
   RCC_OscInitStruct.PLL4.PLLState      = RCC_PLL_ON;
   RCC_OscInitStruct.PLL4.PLLSource     = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL4.PLLM          = 8;
@@ -1194,9 +693,6 @@ static void SystemClock_Config(void)
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* UART console                                                               */
-/* -------------------------------------------------------------------------- */
 
 static void CONSOLE_Config(void)
 {
@@ -1241,9 +737,6 @@ int _write(int file, char *ptr, int len)
   return (status == HAL_OK) ? len : 0;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Cache helper hooks                                                         */
-/* -------------------------------------------------------------------------- */
 
 void npu_cache_enable_clocks_and_reset(void)
 {
@@ -1260,9 +753,6 @@ void npu_cache_disable_clocks_and_reset(void)
   __HAL_RCC_CACHEAXI_FORCE_RESET();
 }
 
-/* -------------------------------------------------------------------------- */
-/* Assert                                                                     */
-/* -------------------------------------------------------------------------- */
 
 #ifdef USE_FULL_ASSERT
 void assert_failed(uint8_t *file, uint32_t line)
