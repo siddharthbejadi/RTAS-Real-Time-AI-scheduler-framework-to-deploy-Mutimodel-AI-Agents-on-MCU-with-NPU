@@ -32,6 +32,10 @@ The system:
 - Buzzer feedback for authentication and UI events
 - UART debug output and TIM text-command support
 - Fully on-device inference on the STM32N6 NPU
+- Cooperative four-process firmware architecture
+- Adaptive AI model scheduling to reduce latency and unnecessary NPU work
+- Zero-copy DCMIPP-to-STAI input path with double-buffered NN capture buffers
+- CPU/NPU timing telemetry for performance analysis
 
 ## What I Used
 
@@ -63,14 +67,25 @@ The system:
 - `mobilefacenet_int8_faces_OE_3_3_1` for face recognition embeddings
 - `fastdepth_224_int8_OE_3_3_1` for depth estimation
 
-Note: TIM intent support exists in the project, but the current default build uses a lightweight rule-based intent parser in `Application/Src/tim_assistant/tim_inference.c`. Generated TIM model files are also present in the `Model` folder for future use.
+Note: TIM intent support exists in the project, but the current default build uses a lightweight rule-based intent parser in `Application/Src/tim_assistant/tim_inference.c`. Full TIM neural-model inference is kept as a future improvement.
 
 ## How It Works
 
-1. `CameraFrame_Process()` captures and prepares a live frame.
+1. `CameraFrame_Process()` captures a camera frame, manages cache coherency, and prepares the NN input buffer.
 2. `ModelScheduler_Process()` runs BlazeFace every frame and schedules MobileFaceNet / FastDepth only when useful.
 3. `AuthDecision_Process()` converts model evidence into enrollment and authentication decisions.
 4. `UiSystem_Process()` polls services and renders the UI.
+
+## Concurrency and Parallel Processing
+
+This is not a Linux or RTOS multi-threaded system. It uses one STM32 firmware image with a cooperative super-loop split into four process-style functions: camera, AI scheduling, authentication, and UI/services.
+
+- **Cooperative concurrency:** `main.c` repeatedly calls `CameraFrame_Process()`, `ModelScheduler_Process()`, `AuthDecision_Process()`, and `UiSystem_Process()` so each subsystem runs in a controlled order without OS threads.
+- **Event-driven synchronization:** camera completion is signalled by `CMW_CAMERA_PIPE_FrameEventCallback()` through the DCMIPP/CSI interrupt path; the CPU waits efficiently using `__WFI()` or `LL_ATON_OSAL_WFE()` while hardware is busy.
+- **Hardware parallelism:** DCMIPP/DMA captures camera frames, LTDC refreshes display layers, and the STM32N6 NPU runs STAI inference while the CPU coordinates scheduling, UI logic, cache maintenance, and authentication decisions.
+- **Double buffering and zero-copy:** when the camera pitch matches the model input, DCMIPP writes directly into the STAI input buffer. Two NN input buffers are used as a ping-pong capture/inference path.
+- **Adaptive scheduling:** BlazeFace runs every frame, MobileFaceNet runs only for a stable single face at configured recheck intervals, and FastDepth runs only during enrollment or known-identity liveness checks.
+- **Performance telemetry:** the firmware records CPU active time, CPU sleep time, NPU runtime, frame latency, and schedule flags over UART.
 
 ## Current System Rules
 
@@ -79,6 +94,10 @@ Note: TIM intent support exists in the project, but the current default build us
 - Face names are stored with a maximum length of `20` characters
 - Face embeddings and depth templates are stored persistently in external flash
 - Authentication thresholds are configurable in `Application/Inc/app_config.h`
+- Stable face requirement: `2` frames
+- Auth recognition recheck: `250 ms`
+- Main-screen recognition recheck: `750 ms`
+- Depth recheck: `1000 ms`
 
 ## Repository Structure
 
@@ -97,11 +116,10 @@ Application/
   STM32CubeIDE/         STM32CubeIDE project files
 Drivers/                Driver sources
 Middlewares/            ST middleware and AI runtime
-Model/                  Generated AI model sources and binaries
+rtas_model_packages/    Generated AI model sources, binaries, and manifest data
 STM32Cube_FW_N6/        STM32 firmware package content
 Utilities/              Utility modules
 PROCESS_ORIENTED_ARCHITECTURE.md  Four-process firmware architecture
-UI_FLOWCHART.md                   UI state flow documentation
 ```
 
 ## Important Source Files
@@ -116,6 +134,7 @@ UI_FLOWCHART.md                   UI state flow documentation
 - `Application/Src/ui_services/app_touch.c` - touch input handling
 - `Application/Src/tim_assistant/tim_app.c` - TIM chat / command handling
 - `Application/Inc/app_config.h` - thresholds and application configuration
+- `Application/Inc/rtas_generated_config.h` - generated model scheduler and buffer configuration
 
 ## Build and Run
 
@@ -153,7 +172,7 @@ Make sure these tools are installed:
   - use the TIM command input
 - Admin users can manage enrolled users and delete profiles
 
-For the UI state machine, see [UI_FLOWCHART.md](UI_FLOWCHART.md).
+For the firmware process architecture, see [PROCESS_ORIENTED_ARCHITECTURE.md](PROCESS_ORIENTED_ARCHITECTURE.md).
 
 ## Notes
 
