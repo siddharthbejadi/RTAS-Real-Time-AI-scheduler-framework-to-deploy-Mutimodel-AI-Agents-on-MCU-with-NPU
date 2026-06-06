@@ -21,6 +21,7 @@
 *.axf
 *.hex
 *.bin
+!rtas_model_packages/**/*.bin
 
 # Generated dependency/metadata
 *.depend
