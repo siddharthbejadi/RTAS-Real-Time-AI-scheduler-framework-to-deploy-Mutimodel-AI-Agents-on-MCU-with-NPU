@@ -11,7 +11,7 @@
 #define CAMERA_WIDTH 0
 #define CAMERA_HEIGHT 0
 #define CAMERA_FPS 30
-extern int32_t cameraFrameReceived;
+extern volatile int32_t cameraFrameReceived;
 
 static void DCMIPP_PipeInitDisplay(CMW_CameraInit_t *camConf, uint32_t *bg_width, uint32_t *bg_height)
 {

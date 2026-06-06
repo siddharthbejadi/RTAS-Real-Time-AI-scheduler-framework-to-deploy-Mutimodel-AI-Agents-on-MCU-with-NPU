@@ -1354,6 +1354,8 @@ void CameraFrame_Process(void)
 	  {
 		s_nn_capture_buf_idx = 0U;
 		s_nn_infer_buf_idx = 0U;
+		s_nn_capture_inflight = 0U;
+		s_nn_capture_inflight_u8 = NULL;
 		nn_in = nn_user_input_u8[s_nn_infer_buf_idx];
 		input_buffers[0] = nn_in;
 

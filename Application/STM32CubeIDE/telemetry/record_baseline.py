@@ -11,7 +11,7 @@ from serial.tools import list_ports
 
 
 BAUD_RATE = 115200
-DEFAULT_OUTPUT = "after_double_buffer_brought_back.csv"
+DEFAULT_OUTPUT = "after_m55_2.csv"
 STLINK_KEYWORDS = ("STMicroelectronics", "STLink", "ST-Link", "Virtual COM Port")
 
 FIELDNAMES = [

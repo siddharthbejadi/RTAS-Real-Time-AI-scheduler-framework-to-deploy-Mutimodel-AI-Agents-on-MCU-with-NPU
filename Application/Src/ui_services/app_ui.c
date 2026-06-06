@@ -2,6 +2,7 @@
 #include "app_touch.h"
 #include "stm32_lcd.h"
 #include "stm32n6570_discovery.h"
+#include "stm32n6570_discovery_lcd.h"
 #include "stm32n6xx_hal.h"
 #include "app_config.h"
 #include "face_store.h"
@@ -36,6 +37,8 @@ extern uint32_t g_hw_cpu_pct;
 extern uint32_t g_hw_npu_run_pct;
 
 #define PERF_OVERLAY_UPDATE_PERIOD_MS  500U
+#define DEPTH_PREVIEW_BLIT_MAX_W       256U
+#define DEPTH_PREVIEW_BLIT_MAX_H       212U
 
 
 volatile uint8_t g_enroll_requested = 0;
@@ -68,6 +71,10 @@ static const uint32_t bbox_colors[6] = {
     0xFF00FF00, 0xFFFF0000, 0xFF0000FF,
     0xFFFFFF00, 0xFFFF00FF, 0xFF00FFFF
 };
+
+__attribute__((section(".psram_bss")))
+__attribute__((aligned(32)))
+static uint16_t s_depth_preview_argb4444[DEPTH_PREVIEW_BLIT_MAX_W * DEPTH_PREVIEW_BLIT_MAX_H];
 
 
 static inline void Panel(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
@@ -130,12 +137,115 @@ static void DrawDetectionBoxes(const od_pp_outBuffer_t *boxes,
     }
 }
 
+static uint16_t Argb8888ToArgb4444(uint32_t color)
+{
+    return (uint16_t)((((color >> 28) & 0x0FU) << 12) |
+                      (((color >> 20) & 0x0FU) << 8) |
+                      (((color >> 12) & 0x0FU) << 4) |
+                      (((color >> 4)  & 0x0FU)));
+}
+
 static uint32_t DepthHeatColor(uint8_t v)
 {
     uint32_t r = (uint32_t)v;
     uint32_t g = (uint32_t)((v > 96U) ? 220U : (v * 220U) / 96U);
     uint32_t b = (uint32_t)(255U - v);
     return 0xFF000000U | (r << 16) | (g << 8) | b;
+}
+
+static uint16_t DepthHeatColorArgb4444(uint8_t v)
+{
+    return Argb8888ToArgb4444(DepthHeatColor(v));
+}
+
+static void BuildDepthPreviewBlit(uint32_t w, uint32_t h)
+{
+    uint16_t *dst = s_depth_preview_argb4444;
+
+    for (uint32_t py = 0U; py < h; py++)
+    {
+        uint32_t sy = (py * DEPTH_PREVIEW_H) / h;
+        const uint8_t *src_row = &g_depth_preview[sy * DEPTH_PREVIEW_W];
+
+        for (uint32_t px = 0U; px < w; px++)
+        {
+            uint32_t sx = (px * DEPTH_PREVIEW_W) / w;
+            *dst++ = DepthHeatColorArgb4444(src_row[sx]);
+        }
+    }
+}
+
+static uint8_t BlitDepthPreviewDma2d(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+{
+#ifdef HAL_DMA2D_MODULE_ENABLED
+    if ((w == 0U) || (h == 0U) ||
+        (Lcd_Ctx[0].PixelFormat != LCD_PIXEL_FORMAT_ARGB4444) ||
+        ((x + w) > Lcd_Ctx[0].XSize) ||
+        ((y + h) > Lcd_Ctx[0].YSize))
+    {
+        return 0U;
+    }
+
+    uint32_t layer = Lcd_Ctx[0].ActiveLayer;
+    uint32_t dst_addr = hlcd_ltdc.LayerCfg[layer].FBStartAdress +
+                        (Lcd_Ctx[0].BppFactor * ((Lcd_Ctx[0].XSize * y) + x));
+
+#ifdef USE_DCACHE
+    SCB_CleanDCache_by_Addr((void *)s_depth_preview_argb4444,
+                            sizeof(s_depth_preview_argb4444));
+#endif
+
+    hlcd_dma2d.Instance = DMA2D;
+    hlcd_dma2d.Init.Mode = DMA2D_M2M_PFC;
+    hlcd_dma2d.Init.ColorMode = DMA2D_OUTPUT_ARGB4444;
+    hlcd_dma2d.Init.OutputOffset = Lcd_Ctx[0].XSize - w;
+
+    if (HAL_DMA2D_Init(&hlcd_dma2d) != HAL_OK)
+    {
+        return 0U;
+    }
+
+    hlcd_dma2d.LayerCfg[1].AlphaMode = DMA2D_NO_MODIF_ALPHA;
+    hlcd_dma2d.LayerCfg[1].InputAlpha = 0xFFU;
+    hlcd_dma2d.LayerCfg[1].InputColorMode = DMA2D_INPUT_ARGB4444;
+    hlcd_dma2d.LayerCfg[1].InputOffset = 0U;
+
+    if (HAL_DMA2D_ConfigLayer(&hlcd_dma2d, 1U) != HAL_OK)
+    {
+        return 0U;
+    }
+
+    if (HAL_DMA2D_Start(&hlcd_dma2d,
+                        (uint32_t)s_depth_preview_argb4444,
+                        dst_addr,
+                        w,
+                        h) != HAL_OK)
+    {
+        return 0U;
+    }
+
+    return (HAL_DMA2D_PollForTransfer(&hlcd_dma2d, 50U) == HAL_OK) ? 1U : 0U;
+#else
+    (void)x;
+    (void)y;
+    (void)w;
+    (void)h;
+    return 0U;
+#endif
+}
+
+static void DrawDepthPreviewFallback(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+{
+    for (uint32_t py = 0U; py < h; py += 2U)
+    {
+        uint32_t sy = (py * DEPTH_PREVIEW_H) / h;
+        for (uint32_t px = 0U; px < w; px += 2U)
+        {
+            uint32_t sx = (px * DEPTH_PREVIEW_W) / w;
+            uint8_t v = g_depth_preview[sy * DEPTH_PREVIEW_W + sx];
+            UTIL_LCD_FillRect(x + px, y + py, 2U, 2U, DepthHeatColor(v));
+        }
+    }
 }
 
 static void DrawDepthPreviewMap(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
@@ -151,16 +261,17 @@ static void DrawDepthPreviewMap(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
         return;
     }
 
-    for (uint32_t py = 0U; py < h; py += 2U)
+    if ((w <= DEPTH_PREVIEW_BLIT_MAX_W) && (h <= DEPTH_PREVIEW_BLIT_MAX_H))
     {
-        uint32_t sy = (py * DEPTH_PREVIEW_H) / h;
-        for (uint32_t px = 0U; px < w; px += 2U)
+        BuildDepthPreviewBlit(w, h);
+        if (BlitDepthPreviewDma2d(x, y, w, h) != 0U)
         {
-            uint32_t sx = (px * DEPTH_PREVIEW_W) / w;
-            uint8_t v = g_depth_preview[sy * DEPTH_PREVIEW_W + sx];
-            UTIL_LCD_FillRect(x + px, y + py, 2U, 2U, DepthHeatColor(v));
+            UTIL_LCD_DrawRect(x, y, w, h, 0xFF8DEBFFU);
+            return;
         }
     }
+
+    DrawDepthPreviewFallback(x, y, w, h);
     UTIL_LCD_DrawRect(x, y, w, h, 0xFF8DEBFFU);
 }
 

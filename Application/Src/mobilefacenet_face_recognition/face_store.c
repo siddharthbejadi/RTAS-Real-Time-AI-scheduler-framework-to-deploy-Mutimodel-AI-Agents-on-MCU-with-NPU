@@ -6,10 +6,21 @@
 #include <math.h>
 #include <stdio.h>
 
+#include "arm_math.h"
 #include "stm32n6xx_hal.h"
 #include "stm32n6570_discovery_xspi.h"
 #include "rtas_generated_config.h"
 
+#ifndef FACE_STORE_USE_HELIUM
+#define FACE_STORE_USE_HELIUM 1
+#endif
+
+#if (FACE_STORE_USE_HELIUM != 0) && defined(ARM_MATH_MVEF) && !defined(ARM_MATH_AUTOVECTORIZE)
+#include "arm_helium_utils.h"
+#define FACE_STORE_HELIUM_F32 1
+#else
+#define FACE_STORE_HELIUM_F32 0
+#endif
 
 __attribute__ ((section(".psram_bss")))
 __attribute__ ((aligned(32)))
@@ -47,19 +58,59 @@ static bool stored_model_matches_current(const FaceStore_Blob_t *blob)
                    FACE_STORE_MODEL_TAG_LEN) == 0;
 }
 
-static float cosine_similarity(const float *a, const float *b, uint32_t n)
+static void cosine_terms_f32(const float *a, const float *b, uint32_t n,
+                             float *dot_out, float *na_out, float *nb_out)
 {
-    float dot = 0.0f, na = 0.0f, nb = 0.0f;
-    const float *a_end = a + n;
+    float dot = 0.0f;
+    float na = 0.0f;
+    float nb = 0.0f;
 
-    while (a < a_end) {
+#if FACE_STORE_HELIUM_F32
+    f32x4_t vec_dot = vdupq_n_f32(0.0f);
+    f32x4_t vec_na = vdupq_n_f32(0.0f);
+    f32x4_t vec_nb = vdupq_n_f32(0.0f);
+    uint32_t blk_cnt = n >> 2U;
+
+    while (blk_cnt > 0U) {
+        f32x4_t vec_a = vld1q(a);
+        f32x4_t vec_b = vld1q(b);
+
+        vec_dot = vfmaq(vec_dot, vec_a, vec_b);
+        vec_na = vfmaq(vec_na, vec_a, vec_a);
+        vec_nb = vfmaq(vec_nb, vec_b, vec_b);
+        a += 4U;
+        b += 4U;
+        blk_cnt--;
+    }
+
+    dot = vecAddAcrossF32Mve(vec_dot);
+    na = vecAddAcrossF32Mve(vec_na);
+    nb = vecAddAcrossF32Mve(vec_nb);
+    n &= 3U;
+#endif
+
+    while (n > 0U) {
         const float av = *a++;
         const float bv = *b++;
         dot += av * bv;
-        na  += av * av;
-        nb  += bv * bv;
+        na += av * av;
+        nb += bv * bv;
+        n--;
     }
+
+    *dot_out = dot;
+    *na_out = na;
+    *nb_out = nb;
+}
+
+static float cosine_similarity(const float *a, const float *b, uint32_t n)
+{
+    float dot;
+    float na;
+    float nb;
+    cosine_terms_f32(a, b, n, &dot, &na, &nb);
     float denom = sqrtf(na) * sqrtf(nb);
+
     if (denom < 1e-8f) return 0.0f;
     return dot / denom;
 }
