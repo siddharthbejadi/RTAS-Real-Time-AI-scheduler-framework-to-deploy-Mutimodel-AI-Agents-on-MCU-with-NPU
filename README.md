@@ -149,7 +149,7 @@ PROCESS_ORIENTED_ARCHITECTURE.md  Four-process firmware architecture
 The STM32CubeIDE project name is:
 
 ```text
-implementing RTAS-MCU
+STM32N6570-DK_Implementing_RTAS
 ```
 
 ### Build Requirements

@@ -1,9 +1,9 @@
 # implementing RTAS-MCU Process-Oriented Architecture
 
-Project root:
+Project root after cloning:
 
 ```text
-D:\BAC\year 3\embedded computing\stm32n6570_secure_access_1\stm32n6570_secure_access
+<repo-root>
 ```
 
 ## Important Meaning

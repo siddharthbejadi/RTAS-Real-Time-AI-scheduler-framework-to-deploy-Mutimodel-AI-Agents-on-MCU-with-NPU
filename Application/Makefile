@@ -18,6 +18,8 @@ quiet_BIN  = @echo "  BIN $@"; $(BIN)
 # helpers
 ######################################
 rwildcard=$(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
+APP_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+ProjDirPath ?= $(patsubst %/,%,$(dir $(APP_DIR)))
 
 ######################################
 # target

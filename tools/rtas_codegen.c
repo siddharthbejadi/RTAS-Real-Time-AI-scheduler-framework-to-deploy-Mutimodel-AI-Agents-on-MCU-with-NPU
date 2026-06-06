@@ -237,6 +237,18 @@ static void dirname_of(const char *path, char *out, size_t out_size)
   out[last - path] = '\0';
 }
 
+static void resolve_path(const char *path, char *out, size_t out_size)
+{
+#if defined(_WIN32)
+  if (_fullpath(out, path, out_size) == NULL)
+  {
+    fail("cannot resolve path: %s", path);
+  }
+#else
+  copy_text(out, out_size, path);
+#endif
+}
+
 static void join_path(char *out, size_t out_size, const char *base, const char *name)
 {
   size_t base_len = strlen(base);
@@ -666,6 +678,7 @@ int main(int argc, char **argv)
 {
   const char *manifest_path = arg_value(argc, argv, "--manifest");
   const char *out_path = arg_value(argc, argv, "--out");
+  char manifest_resolved[RTAS_PATH_MAX];
   RtasManifest manifest;
 
   if ((manifest_path == NULL) || (out_path == NULL))
@@ -674,8 +687,9 @@ int main(int argc, char **argv)
     return 2;
   }
 
+  resolve_path(manifest_path, manifest_resolved, sizeof(manifest_resolved));
   parse_manifest(manifest_path, &manifest);
-  validate_artifacts(manifest_path, &manifest);
+  validate_artifacts(manifest_resolved, &manifest);
   generate_header(manifest_path, &manifest, out_path);
   printf("RTAS generated %s\n", out_path);
   return 0;

@@ -450,7 +450,7 @@
 	<variableList>
 		<variable>
 			<name>copy_PARENT</name>
-			<value>file:/D:/BAC/year%203/embedded%20computing/stm32n6570_secure_access_1/stm32n6570_secure_access</value>
+			<value>$%7BPARENT-2-PROJECT_LOC%7D</value>
 		</variable>
 		<variable>
 			<name>copy_PARENT1</name>

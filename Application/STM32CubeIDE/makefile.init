@@ -7,6 +7,8 @@
 HOST_CC ?= gcc
 RTAS_PACKAGE_ROOT := ../../../rtas_model_packages
 RTAS_MANIFEST := ../../../rtas_model_packages/rtas_models.pbtxt
+RTAS_PACKAGE_ROOT_ABS := $(abspath $(RTAS_PACKAGE_ROOT))
+RTAS_MANIFEST_ABS := $(abspath $(RTAS_MANIFEST))
 RTAS_SCANNER_SOURCE := ../../../tools/rtas_scan_packages.c
 RTAS_SCANNER_EXE := rtas_scan_packages.exe
 RTAS_CODEGEN_SOURCE := ../../../tools/rtas_codegen.c
@@ -23,7 +25,7 @@ $(RTAS_CODEGEN_EXE): $(RTAS_CODEGEN_SOURCE)
 rtas_manifest_force:
 
 $(RTAS_MANIFEST): rtas_manifest_force $(RTAS_SCANNER_EXE)
-	./$(RTAS_SCANNER_EXE) --packages "$(RTAS_PACKAGE_ROOT)" --out "$@"
+	./$(RTAS_SCANNER_EXE) --packages "$(RTAS_PACKAGE_ROOT_ABS)" --out "$(RTAS_MANIFEST_ABS)"
 
 $(RTAS_GENERATED_CONFIG): $(RTAS_MANIFEST) $(RTAS_CODEGEN_EXE)
 	./$(RTAS_CODEGEN_EXE) --manifest "$(RTAS_MANIFEST)" --out "$@"

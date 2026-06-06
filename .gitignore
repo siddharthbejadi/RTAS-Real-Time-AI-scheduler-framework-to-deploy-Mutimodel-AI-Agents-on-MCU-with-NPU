@@ -25,6 +25,11 @@
 # Generated dependency/metadata
 *.depend
 *.stackdump
+__pycache__/
+*.pyc
+
+# Local telemetry captures
+Application/STM32CubeIDE/telemetry/*.csv
 
 # Backups
 *.bak
