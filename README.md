@@ -70,6 +70,10 @@ The system:
 Note: TIM intent support exists in the project, but the current default build uses a lightweight rule-based intent parser in `Application/Src/tim_assistant/tim_inference.c`. Full TIM neural-model inference is kept as a future improvement.
 
 ## How It Works
+Before building the project in the STM32CUDE IDE you must flash the binary files using STM32Programmer to there addresses.
+'rtas_model_packages/blazeface_detector/generated/network_face_atonbuf.xSPI2.bin' to **0x71000000**
+'rtas_model_packages/fastdepth_liveness/generated/depth_atonbuf.xSPI2.bin' to **0x71400000**
+'rtas_model_packages/mobilefacenet_embedder/generated/network_embed_atonbuf.xSPI2.bin' to **0x71200000**
 
 1. `CameraFrame_Process()` captures a camera frame, manages cache coherency, and prepares the NN input buffer.
 2. `ModelScheduler_Process()` runs BlazeFace every frame and schedules MobileFaceNet / FastDepth only when useful.
